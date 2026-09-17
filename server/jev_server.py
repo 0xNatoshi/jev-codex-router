@@ -25,8 +25,13 @@ Fail-open: any Jev error → astra @medium. Kill switch: file
 ~/.codex/codex-router/jev-router.off → relay astra without a decision.
 Shadow: file ~/.codex/codex-router/jev-router.shadow → decide and log the
 route, but serve plain astra (quality-neutral data collection).
+Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
+(jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
+Display: streamed reasoning summaries get the routed tag appended in place
+( · ⚡sol:low) so the Codex thread shows the picked model per call.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 """
+import codecs
 import http.client
 import json
 import os
@@ -42,6 +47,7 @@ ENV_PATH = os.path.join(HOME, ".hermes", ".env")
 CALLER_SECRET_PATH = os.path.join(STATE, "caller-secret")
 OFF_PATH = os.path.join(STATE, "jev-router.off")
 SHADOW_PATH = os.path.join(STATE, "jev-router.shadow")
+DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
@@ -247,6 +253,217 @@ def classify(payload):
     return detail
 
 
+def _debug_shape(payload):
+    """Bounded request shape for wire debugging (jev-router.debug flag)."""
+    inp = payload.get("input")
+    items = inp if isinstance(inp, list) else []
+    tail = []
+    for item in items[-8:]:
+        if isinstance(item, dict):
+            tail.append(item.get("type") or item.get("role"))
+    names = []
+    for tool in (payload.get("tools") or [])[:10]:
+        if isinstance(tool, dict):
+            names.append(tool.get("name") or (tool.get("function") or {}).get("name"))
+    return {
+        "keys": sorted(payload.keys()),
+        "model": payload.get("model"),
+        "reasoning": payload.get("reasoning"),
+        "include": payload.get("include"),
+        "stream": payload.get("stream"),
+        "store": payload.get("store"),
+        "tool_choice": payload.get("tool_choice"),
+        "parallel_tool_calls": payload.get("parallel_tool_calls"),
+        "instructions_head": (payload.get("instructions") or "")[:200],
+        "n_input": len(items),
+        "tail": tail,
+        "tools": names,
+    }
+
+
+def route_marker(model, effort):
+    """Short visible tag for the routed call, e.g. ' · ⚡sol:low'."""
+    short = {
+        "gpt-5.6-luna": "luna",
+        "gpt-5.6-sol": "sol",
+        "gpt-6-astra": "astra",
+        "gpt-5.6-terra": "terra",
+    }.get(model)
+    if not short:
+        short = (model or "?").split("/")[-1]
+    return f" · ⚡{short}" + (f":{effort}" if effort else "")
+
+
+class SummaryMarker:
+    """Append the routed tag to reasoning summaries (the thread's thinking blocks).
+
+    The last delta of each summary part is held back by one event so the tag can
+    be appended in place to it and to the matching done events: no fabricated
+    events, no sequence-number surgery, byte-exact pass-through everywhere else.
+    Only active for streamed responses.
+    """
+
+    def __init__(self, marker):
+        self.marker = marker
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._buf = ""
+        self._block = []
+        self._held = None  # (key, block_lines)
+
+    @staticmethod
+    def _emit(lines):
+        return "".join(line + "\n" for line in lines) + "\n"
+
+    @staticmethod
+    def _event_type(block):
+        for line in block:
+            if line.startswith("event: "):
+                return line[7:].strip()
+        return ""
+
+    @staticmethod
+    def _data(block):
+        for line in block:
+            if line.startswith("data: "):
+                try:
+                    return json.loads(line[6:])
+                except ValueError:
+                    return None
+        return None
+
+    @staticmethod
+    def _rebuild(block, data):
+        return [
+            f"data: {json.dumps(data, ensure_ascii=False)}" if line.startswith("data: ") else line
+            for line in block
+        ]
+
+    def _tag(self, value):
+        if not isinstance(value, str) or not value or self.marker in value:
+            return value
+        return value + self.marker
+
+    def _tag_delta_block(self, block):
+        data = self._data(block)
+        if not isinstance(data, dict):
+            return block
+        data["delta"] = self._tag(data.get("delta"))
+        return self._rebuild(block, data)
+
+    def _tag_done_block(self, block):
+        data = self._data(block)
+        if not isinstance(data, dict):
+            return block
+        if "text" in data:
+            data["text"] = self._tag(data.get("text"))
+        part = data.get("part")
+        if isinstance(part, dict) and "text" in part:
+            part["text"] = self._tag(part.get("text"))
+        return self._rebuild(block, data)
+
+    def _tag_item_block(self, block):
+        data = self._data(block)
+        if not isinstance(data, dict):
+            return block
+        item = data.get("item")
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            for part in item.get("summary") or []:
+                if isinstance(part, dict) and "text" in part:
+                    part["text"] = self._tag(part.get("text"))
+        response = data.get("response")
+        if isinstance(response, dict):
+            for item in response.get("output") or []:
+                if isinstance(item, dict) and item.get("type") == "reasoning":
+                    for part in item.get("summary") or []:
+                        if isinstance(part, dict) and "text" in part:
+                            part["text"] = self._tag(part.get("text"))
+        return self._rebuild(block, data)
+
+    def _process_block(self, block):
+        out = []
+        data = self._data(block)
+        if not isinstance(data, dict):
+            if self._held is not None:
+                out.append(self._emit(self._held[1]))
+                self._held = None
+            out.append(self._emit(block))
+            return out
+        dtype = data.get("type")
+        if dtype == "response.reasoning_summary_text.delta":
+            if self._held is not None:
+                out.append(self._emit(self._held[1]))
+            key = (data.get("item_id"), data.get("summary_index"))
+            self._held = (key, block)
+            return out
+        if dtype == "response.reasoning_summary_text.done":
+            if self._held is not None:
+                key = (data.get("item_id"), data.get("summary_index"))
+                held_block = self._held[1]
+                if self._held[0] == key:
+                    held_block = self._tag_delta_block(held_block)
+                out.append(self._emit(held_block))
+                self._held = None
+            out.append(self._emit(self._tag_done_block(block)))
+            return out
+        if dtype == "response.reasoning_summary_part.done":
+            if self._held is not None:
+                key = (data.get("item_id"), data.get("summary_index"))
+                held_block = self._held[1]
+                if self._held[0] == key:
+                    held_block = self._tag_delta_block(held_block)
+                out.append(self._emit(held_block))
+                self._held = None
+            out.append(self._emit(self._tag_done_block(block)))
+            return out
+        if dtype == "response.output_item.done":
+            item = data.get("item") or {}
+            if item.get("type") == "reasoning":
+                if self._held is not None:
+                    held_block = self._held[1]
+                    if self._held[0][0] == item.get("id"):
+                        held_block = self._tag_delta_block(held_block)
+                    out.append(self._emit(held_block))
+                    self._held = None
+                out.append(self._emit(self._tag_item_block(block)))
+                return out
+        if dtype == "response.completed":
+            out.append(self._emit(self._tag_item_block(block)))
+            return out
+        if self._held is not None:
+            out.append(self._emit(self._held[1]))
+            self._held = None
+        out.append(self._emit(block))
+        return out
+
+    def feed(self, raw):
+        self._buf += self._decoder.decode(raw)
+        out = []
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.endswith("\r"):
+                line = line[:-1]
+            if line == "":
+                if self._block:
+                    out.extend(self._process_block(self._block))
+                    self._block = []
+                out.append("\n")
+            else:
+                self._block.append(line)
+        return "".join(out)
+
+    def flush(self):
+        out = []
+        if self._held is not None:
+            out.append(self._emit(self._held[1]))
+            self._held = None
+        if self._block:
+            out.append(self._emit(self._block))
+            self._block = []
+        out.append(self._buf)
+        self._buf = ""
+        return "".join(out)
+
+
 def assemble_sse(raw):
     """Rebuild the final response object from an SSE stream (non-stream requests)."""
     final = None
@@ -341,6 +558,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "json object expected"}})
 
         t0 = time.time()
+        debug = os.path.exists(DEBUG_PATH)
+        if debug:
+            try:
+                with open(os.path.join(STATE, "jev-router-debug.jsonl"), "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(
+                        {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "shape": _debug_shape(payload)},
+                        ensure_ascii=False) + "\n")
+            except OSError:
+                pass
         task, prev_assistant, signals = extract(payload)
         step = classify(payload)
         stream_requested = payload.get("stream") is True
@@ -381,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
             model, effort, speed, gate = ASTRA, None, None, "shadow(astra)"
 
+        shown = would if would else {"model": model, "effort": effort}
+        marker = route_marker(shown["model"], shown["effort"])
+
         payload["model"] = model
         if effort:
             reasoning = payload.get("reasoning")
@@ -416,18 +645,40 @@ class Handler(BaseHTTPRequestHandler):
 
             if is_sse and stream_requested:
                 out_kind = "sse"
+                cap = None
+                if debug:
+                    try:
+                        cap = open(os.path.join(STATE, "jev-router-debug-stream.log"), "a", encoding="utf-8")
+                        cap.write(f"\n===== {time.strftime('%H:%M:%S')} model={model} =====\n")
+                    except OSError:
+                        cap = None
                 self.send_response(status)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
+                markerer = SummaryMarker(marker)
                 while True:
                     chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
                     if not chunk:
                         break
-                    self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n")
+                    if cap is not None:
+                        try:
+                            cap.write(chunk.decode("utf-8", "replace"))
+                            cap.flush()
+                        except OSError:
+                            cap = None
+                    piece = markerer.feed(chunk).encode("utf-8")
+                    if piece:
+                        self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
+                        self.wfile.flush()
+                piece = markerer.flush().encode("utf-8")
+                if piece:
+                    self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
                     self.wfile.flush()
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
+                if cap is not None:
+                    cap.close()
             else:
                 out_kind = "json"
                 data = resp.read()

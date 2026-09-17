@@ -154,6 +154,14 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   routed turn.
 - **Kill switch** (instant, no restart): `touch ~/.codex/codex-router/jev-router.off`
   → the server relays to astra without calling Jev. Remove the file to re-enable.
+- **Thread display**: streamed reasoning summaries get the routed tag appended
+  in place ( · ⚡sol:low) — the picked model shows inside each call's thinking
+  block in the Codex thread.
+- **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
+  are logged (`would` field) while every call is still served by astra.
+- **Debug capture** (bounded): `touch ~/.codex/codex-router/jev-router.debug`
+  → request shapes in `jev-router-debug.jsonl` and raw response streams in
+  `jev-router-debug-stream.log`. Remove the file to stop.
 - **Tune the policy**: constants at the top of `server/jev_server.py`
   (`CONF_GATE`, tiers). Restart the server after edits.
 - **Backtest**: `python3 poc/backtest_savings.py --days 7` (see BACKTEST.md).
