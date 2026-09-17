@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Étape 2 — SHADOW MODE v2 (replay hors-ligne sur de vraies requêtes Codex).
+"""Step 2 — SHADOW MODE v2 (offline replay over real Codex requests).
 
-- État enrichi : projet (cwd), continuité (dernier message assistant), signaux
-  (pièces jointes, fragment court), en plus du texte de la requête.
-- Déduplique via shadow-log.jsonl → les runs quotidiens n'ajoutent que du nouveau.
-- --quiet : une seule ligne de résumé (pour le cron).
-- Gate de confiance : conf < 0.5 → "hold" (ne pas dégrader), sinon "apply".
+- Enriched state: project (cwd), continuity (last assistant message), signals
+  (attachments, short follow-up), on top of the request text.
+- Deduplicates via shadow-log.jsonl → daily runs only add what's new.
+- --quiet: a single summary line (for cron).
+- Confidence gate: conf < 0.5 → "hold" (no downgrade), otherwise "apply".
 
-AUCUN impact sur le router : lecture seule + appels Jev. Le routage réel n'est pas touché.
+No impact on the router: read-only + Jev calls. Real routing is untouched.
 
 Usage: python3 shadow_replay.py [--limit 40] [--days 3] [--dry] [--quiet] [--log PATH] [--ignore-seen]
 """
@@ -48,7 +48,7 @@ def _message_text(p):
 
 
 def extract_user_turns(path, cap=6):
-    """[{text, cwd, prev}] — tours utilisateur + contexte (cwd de session, dernier assistant)."""
+    """[{text, cwd, prev}] — user turns + context (session cwd, last assistant message)."""
     out, cwd, prev = [], "", ""
     try:
         for line in open(path, encoding="utf-8"):
@@ -158,7 +158,7 @@ def main():
             tasks.append((path, turn))
     tasks = tasks[: args.limit]
     if not args.quiet:
-        print(f"sessions récentes ({args.days} j): {len(files)} | nouveaux tours: {len(tasks)} (skipped {skipped})")
+        print(f"recent sessions ({args.days} d): {len(files)} | new turns: {len(tasks)} (skipped {skipped})")
     if args.dry:
         for p, t in tasks[:12]:
             print(f"- [{os.path.basename(p)[:34]}] {t['text'][:95]}")
@@ -166,7 +166,7 @@ def main():
 
     key = poc.load_key()
     if not key:
-        print("!! clé absente (~/.hermes/.env)", file=sys.stderr)
+        print("!! key missing (~/.hermes/.env)", file=sys.stderr)
         return 2
 
     q = poc.questions()
@@ -201,15 +201,15 @@ def main():
             except Exception as e:
                 errors += 1
                 if not args.quiet:
-                    print(f"#{i:>2}  ERREUR: {e}")
+                    print(f"#{i:>2}  ERROR: {e}")
                 else:
-                    print(f"[jev-shadow] ERREUR tache {i}: {e}", file=sys.stderr)
+                    print(f"[jev-shadow] ERROR task {i}: {e}", file=sys.stderr)
 
     print(f"[jev-shadow] +{len(tasks)} routes | luna {dist.get('gpt-5.6-luna', 0)} · sol {dist.get('gpt-5.6-sol', 0)} · astra {dist.get('gpt-6-astra', 0)} | holds {holds} | err {errors} | {n_tok} tok | {ts}")
     if not args.quiet:
         actual = summarize_actual(args.days)
         if actual:
-            print(f"usage réel ({args.days} j, 200): {dict(actual.most_common(8))}")
+            print(f"actual usage ({args.days} d, 200): {dict(actual.most_common(8))}")
         print(f"log: {os.path.abspath(args.log)}")
     return 0
 

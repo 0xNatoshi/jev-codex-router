@@ -1,7 +1,7 @@
 #!/bin/zsh
-# Installe (ou réinstalle) le service launchd du Jev Router.
-# À lancer UNE fois par l'utilisateur, dans SON Terminal (launchctl est
-# volontairement restreint dans les agents supervisés).
+# Install (or re-install) the Jev Router launchd service.
+# Run ONCE by the user, from THEIR Terminal (launchctl is deliberately
+# restricted inside supervised agents).
 #
 #   bash ~/Documents/Github/jev-codex-router/server/install-service.sh
 #
@@ -13,7 +13,7 @@ LABEL="${JEV_ROUTER_LABEL:-com.thibaultsaintjean.jev-router}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOGDIR="$HOME/Library/Logs"
 
-[ -x "$PYTHON" ] || { echo "python3 introuvable"; exit 1; }
+[ -x "$PYTHON" ] || { echo "python3 not found"; exit 1; }
 mkdir -p "$LOGDIR"
 
 cat > "$PLIST" <<EOF
@@ -36,7 +36,7 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
-# Remplace toute instance existante (watchdog / ancien label) par le service.
+# Replace any existing instance (watchdog / former label) with the service.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/io.0xnatoshi.jev-router.plist"
 launchctl bootout "gui/$(id -u)/io.0xnatoshi.jev-router" 2>/dev/null || true
@@ -48,4 +48,4 @@ if curl -s -m 5 http://127.0.0.1:4319/health; then
   echo ""
   echo "— Jev Router service OK ($LABEL)"
 fi
-echo "Désinstaller : launchctl bootout gui/\$(id -u)/$LABEL"
+echo "Uninstall: launchctl bootout gui/\$(id -u)/$LABEL"

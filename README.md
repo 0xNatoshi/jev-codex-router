@@ -8,6 +8,7 @@ the frontier model. The decision costs ≈ $0.00003 and ≈ 0.6 s per turn.
 
 **Measured savings: ≈ −60 % vs a full-frontier baseline** on a 7-day replay of
 237 real turns — protocol, tables and limitations in [BACKTEST.md](BACKTEST.md).
+Installing with an AI agent? Hand it [AGENTS.md](AGENTS.md).
 
 This is not a fork of any router: it plugs into an existing local
 **Codex Router** installation through its official extension points
@@ -54,6 +55,7 @@ frontier model instead eats ~80% of the savings (see `poc/BACKTEST.md`).
 
 ```
 BACKTEST.md  Savings backtest — protocol, tables, limitations (the "proof")
+AGENTS.md    Autonomous install & operations playbook (for AI agents)
 poc/         Tiering POC, shadow replay, and the backtest tool
 server/      The live server + service install (this is what runs)
 hook/        Explored alternative (LiteLLM callback tap) — kept for reference

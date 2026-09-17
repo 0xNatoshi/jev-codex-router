@@ -1,12 +1,12 @@
-"""Jev tap — callback LiteLLM (BROUILLON, pas encore installé).
+"""Jev tap — LiteLLM callback (DRAFT, never installed).
 
-Tap fail-open : chaque requête passant par le gateway est journalisée en local (JSONL).
-AUCUN appel réseau ici — l'analyse Jev se fait hors-bande (voir poc/shadow_replay.py).
+Fail-open tap: every request passing through the gateway is logged locally (JSONL).
+No network call here — the Jev analysis happens out-of-band (see poc/shadow_replay.py).
 
-Installation (exploration — approche non retenue) :
-  1. copier ce fichier dans ~/.codex/codex-router/jev_tap_callback.py
-  2. ajouter "jev_tap_callback.jev_tap_callback" à callbacks: dans litellm.yaml
-  3. redémarrer le service router
+Installation (exploration — approach not adopted):
+  1. copy this file to ~/.codex/codex-router/jev_tap_callback.py
+  2. add "jev_tap_callback.jev_tap_callback" to callbacks: in litellm.yaml
+  3. restart the router service
 """
 import json
 import os
@@ -40,7 +40,7 @@ def _last_user_text(data):
 
 
 class jev_tap_callback:
-    """LiteLLM CustomLogger — journalise le dernier message user, rien d'autre."""
+    """LiteLLM CustomLogger — logs the last user message, nothing else."""
 
     def __init__(self):
         self.tap_path = TAP_PATH
@@ -59,5 +59,5 @@ class jev_tap_callback:
             with open(self.tap_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception:
-            pass  # fail-open : jamais d'exception dans le chemin requête
+            pass  # fail-open: never raise on the request path
         return data

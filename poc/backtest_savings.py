@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Backtest — estimation de l'économie du routage Jev sur de vraies sessions Codex.
+"""Backtest — estimate Jev routing savings on real Codex sessions.
 
-Rejoue les tours réels des derniers jours :
-  - tokens réels par tour  (token_usage_record → turn_token_usage)
-  - modèle réel par session (thread_settings_applied)
-  - route Jev par tour      (tier + depth → politique luna/sol/astra)
-et compare le coût "API-équivalent" des deux scénarios aux prix publiés
-(short context, sep/2026) :
+Replays real turns from the last N days:
+  - real tokens per turn   (token_usage_record → turn_token_usage)
+  - real model per session (thread_settings_applied)
+  - Jev route per turn     (tier + depth → luna/sol/astra policy)
+and compares the "API-equivalent" cost of both scenarios at published prices
+(short context, Sep 2026):
 
   astra $10/$50 · sol $4/$20 · terra $2/$12 · luna $0.20/$1.20 (+fast mode x2)
 
@@ -23,25 +23,25 @@ _spec.loader.exec_module(poc)
 SESS_ROOT = os.path.expanduser("~/.codex/sessions")
 RESULT_PATH = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
 
-# Prix par 1M tokens (short context, page API OpenAI, sep/2026)
+# Prices per 1M tokens (short context, OpenAI API page, Sep 2026)
 PRICES = {
     "gpt-6-astra":   (10.00, 50.00, 1.00, 12.50),   # (input, output, cached_in, cache_write)
     "gpt-5.6-sol":   (4.00, 20.00, 0.40, 5.00),
     "gpt-5.6-terra": (2.00, 12.00, 0.20, 2.50),
     "gpt-5.6-luna":  (0.20, 1.20, 0.02, 0.25),
-    # off-peak, aligné V4 Flash (cf docs router)
+    # off-peak, aligned with V4 Flash (cf. router docs)
     "deepseek/deepseek-v4.1-flash": (0.15, 0.60, 0.015, 0.15),
 }
-LUNA_FAST_X = 2.0            # fast mode = 2x rates (politique: luna toujours en priority)
+LUNA_FAST_X = 2.0            # fast mode = 2x rates (policy: luna always runs priority)
 CONF_GATE = 0.5
 
 TAG_CLEAN = re.compile(r"<[^>]+>")
 
 
 def route_policy(tier, depth, conf, gate=CONF_GATE):
-    """Politique prod : luna max+fast, sol/astra adaptatif, gate de confiance → astra."""
+    """Production policy: luna max+fast, sol/astra adaptive, confidence gate → middle tier."""
     if gate is not None and conf is not None and conf < gate:
-        # fallback recalibré 17/09 : tier du milieu, pas le haut (cf BACKTEST.md)
+        # recalibrated fallback: the middle tier, not the top (see BACKTEST.md)
         return "gpt-5.6-sol"
     if tier == "gpt-5.6-luna":
         return "gpt-5.6-luna"
@@ -68,18 +68,18 @@ def main():
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--limit-unique", type=int, default=300)
     ap.add_argument("--from-cache", action="store_true",
-                    help="réutilise routes_detail du dernier run (pas d'appels Jev)")
+                    help="reuse routes_detail from the last run (no Jev calls)")
     args = ap.parse_args()
 
     cut = time.time() - args.days * 86400
     files = [p for p in glob.glob(os.path.join(SESS_ROOT, "*", "*", "*", "*.jsonl"))
              if os.stat(p).st_mtime >= cut]
     files.sort()
-    print(f"sessions ({args.days} j): {len(files)}")
+    print(f"sessions ({args.days} d): {len(files)}")
 
     all_turns = []
     for path in files:
-        # parse séquentiel : task_started → texte user → tokens cumulés du tour
+        # sequential parse: task_started → user text → cumulative turn tokens
         seq, cur, last_assist, model2, cwd2 = [], None, "", "gpt-6-astra", ""
         for line in open(path, encoding="utf-8"):
             if '"session_meta"' not in line and '"role"' not in line and '"task_started"' not in line \
@@ -118,26 +118,26 @@ def main():
                 tk["cwd"] = cwd2
                 all_turns.append(tk)
 
-    print(f"tours exploitables: {len(all_turns)}")
+    print(f"usable turns: {len(all_turns)}")
     if not all_turns:
         return 1
 
-    # Clé unique pour les appels Jev (mémo), multiplicité = tours réels
+    # One key per Jev call (memoized); multiplicity = real turns
     unique = {}
     for tk in all_turns:
         key = tk["text"][:80].lower()
         unique.setdefault(key, {"n": 0, "text": tk["text"], "prev": tk["prev"], "cwd": tk["cwd"]})
         unique[key]["n"] += 1
     keys = list(unique)[: args.limit_unique]
-    print(f"textes uniques à classer par Jev: {len(keys)}")
+    print(f"unique prompts to classify with Jev: {len(keys)}")
 
     routes = {}
     if args.from_cache:
         routes = (json.load(open(RESULT_PATH)).get("routes_detail") or {})
-        print(f"routes depuis le cache: {len(routes)}")
+        print(f"routes from cache: {len(routes)}")
     key = None if args.from_cache else poc.load_key()
     if not args.from_cache and not key:
-        print("!! TYPESAFE_API_KEY absente")
+        print("!! TYPESAFE_API_KEY missing")
         return 2
     q = poc.questions() if not args.from_cache else None
     t0 = time.time()
@@ -157,12 +157,12 @@ def main():
                          "route": route_policy(tier["choice"], depth, tier.get("confidence"))}
         except Exception as e:
             routes[k] = {"tier": None, "conf": None, "depth": None, "route": "gpt-6-astra"}
-            print(f"  #{i}: erreur Jev → astra ({e})")
+            print(f"  #{i}: Jev error → astra ({e})")
         if i % 25 == 0:
             print(f"  ...{i}/{len(keys)} ({time.time()-t0:.0f}s)")
-    print(f"classification Jev: {len(keys)} textes en {time.time()-t0:.0f}s")
+    print(f"Jev classification: {len(keys)} prompts in {time.time()-t0:.0f}s")
 
-    # Agrégation
+    # Aggregate
     sum_actual = sum_jev = 0.0
     tok_volume = {"input": 0, "cached": 0, "output": 0}
     dist_counts, dist_weights, dist_costs = {}, {}, {}
@@ -233,20 +233,20 @@ def main():
     json.dump(result, open(RESULT_PATH, "w"), indent=2)
 
     print("\n" + "=" * 72)
-    print(f"BACKTEST — {len(all_turns)} tours réels / {args.days} jours")
-    print(f"tokens: input {tok_volume['input']/1e6:.1f}M (dont cached {tok_volume['cached']/1e6:.1f}M) · output {tok_volume['output']/1e6:.3f}M")
-    print(f"scénario réel  (mix sessions, £ prix publiés): ${sum_actual:.2f}")
-    print(f"scénario Jev   : ${sum_jev:.2f}")
-    print(f"→ ÉCONOMIE ESTIMÉE : {pct:.1f} %")
-    print(f"modèles réels: {model_seen} · gated: {gated} · ignorés: {skipped}")
-    print("scénarios 100%: " + " · ".join(
+    print(f"BACKTEST — {len(all_turns)} real turns / {args.days} days")
+    print(f"tokens: input {tok_volume['input']/1e6:.1f}M (cached {tok_volume['cached']/1e6:.1f}M) · output {tok_volume['output']/1e6:.3f}M")
+    print(f"actual scenario  (session mix, published prices): ${sum_actual:.2f}")
+    print(f"Jev scenario     : ${sum_jev:.2f}")
+    print(f"→ ESTIMATED SAVINGS: {pct:.1f} %")
+    print(f"actual models: {model_seen} · gated: {gated} · skipped: {skipped}")
+    print("100% scenarios: " + " · ".join(
         f"{k.split('/')[-1]} ${v:.0f}" for k, v in sorted(scen.items(), key=lambda x: x[1])))
-    print(f"base full-Astra: ${astra_all:.0f} · gates: " + " · ".join(
+    print(f"full-Astra baseline: ${astra_all:.0f} · gates: " + " · ".join(
         f"{g}: −{(astra_all-s)/astra_all*100:.1f}%" for g, s in gate_scen.items()))
     print("-" * 72)
     for k in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"):
-        print(f"  {k:<14} {dist_counts.get(k,0):>4} tours · ${dist_costs.get(k,0):.2f}")
-    print(f"résultat: {RESULT_PATH}")
+        print(f"  {k:<14} {dist_counts.get(k,0):>4} turns · ${dist_costs.get(k,0):.2f}")
+    print(f"result: {RESULT_PATH}")
     return 0
 
 

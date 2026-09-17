@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Jev Router — serveur local 127.0.0.1:4319 pour le Codex Router.
+"""Jev Router — local server on 127.0.0.1:4319 for the Codex Router.
 
-Reçoit les requêtes Responses destinées au modèle « jev/auto » (generic provider
-« jev » du Codex Router), demande à Jev (TypeSafe System One) le tier et la
-profondeur de réflexion, applique la politique de route, puis relaie vers
-l'edge local du Codex Router (partage de session native activé) — sans aucune
-conversion de format : Responses in, Responses out, SSE relayé tel quel.
+Receives Responses requests destined for the "jev/auto" model (the Codex
+Router's "jev" generic provider), asks Jev (TypeSafe System One) for a tier
+and a thinking depth, applies the routing policy, then relays to the Codex
+Router's local caller edge (native session sharing enabled) — with no format
+conversion: Responses in, Responses out, SSE relayed verbatim.
 
-Politique de route par défaut :
-  luna  → thinking max systématique + speed priority (le 2x ne coûte rien)
-  sol   → thinking adaptatif selon la tâche (depth Jev) + speed standard
-  astra → thinking adaptatif selon la tâche (depth Jev) + speed standard
-  conf < 0.5 → HOLD : fallback au tier du milieu (sol) — anti-dégradation
-  sans cramer le frontière (calibré par backtest 17/09 : −12% → −60% vs full-Astra).
+Default routing policy:
+  luna  → always max thinking + priority speed (the 2x cost is negligible)
+  sol   → adaptive thinking depth (Jev) + standard speed
+  astra → adaptive thinking depth (Jev) + standard speed
+  conf < 0.5 → HOLD: fall back to the middle tier (sol) — anti-downgrade
+  without burning the frontier (backtest-calibrated: −12% → −60% vs full-Astra).
 
-Fail-open : toute erreur Jev → astra @medium. Kill switch : créer le fichier
-~/.codex/codex-router/jev-router.off → relais astra sans décision.
-Journal : ~/.codex/codex-router/jev-router-live.jsonl
+Fail-open: any Jev error → astra @medium. Kill switch: create the file
+~/.codex/codex-router/jev-router.off → relay astra without a decision.
+Log: ~/.codex/codex-router/jev-router-live.jsonl
 """
 import http.client
 import json
@@ -83,17 +83,18 @@ _log_lock = threading.Lock()
 
 
 def load_key():
-    """TYPESAFE_API_KEY : le fichier ~/.hermes/.env est prioritaire (env parfois périmé)."""
-    try:
-        with open(ENV_PATH, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("TYPESAFE_API_KEY="):
-                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if value:
-                        return value
-    except OSError:
-        pass
+    """TYPESAFE_API_KEY: env files win (the process environment can be stale)."""
+    for path in (ENV_PATH, os.path.join(HOME, ".jev.env")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("TYPESAFE_API_KEY="):
+                        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if value:
+                            return value
+        except OSError:
+            continue
     return os.environ.get("TYPESAFE_API_KEY", "").strip()
 
 
@@ -119,10 +120,10 @@ def clamp_effort(depth):
 
 
 def route(tier, depth, conf):
-    """Applique la politique de route. Retourne (model, effort, speed, gate)."""
+    """Apply the routing policy. Returns (model, effort, speed, gate)."""
     if conf is not None and conf < CONF_GATE:
-        # Backtest 17/09 : un fallback sur astra mangeait ~80% de l'économie ;
-        # le tier du milieu garde l'anti-dégradation sans cramer le frontière.
+        # Backtest finding: falling back to astra ate ~80% of the savings;
+        # the middle tier keeps the anti-downgrade property without burning the frontier.
         return SOL, clamp_effort(depth), "default", "hold(sol)"
     if tier == LUNA:
         return LUNA, "max", "priority", "apply"
@@ -146,7 +147,7 @@ def _content_text(content):
 
 
 def extract(payload):
-    """Dernier message user + dernier assistant + petites stats."""
+    """Last user message + last assistant message + small stats."""
     inp = payload.get("input")
     last_user = last_assistant = ""
     n_items = 0
@@ -183,7 +184,7 @@ def extract(payload):
 
 
 def assemble_sse(raw):
-    """Reconstruit l'objet réponse final depuis un flux SSE (requêtes non-stream)."""
+    """Rebuild the final response object from an SSE stream (non-stream requests)."""
     final = None
     error = None
     for line in raw.decode("utf-8", "replace").splitlines():
@@ -255,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             self._post()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as exc:  # fail-open au niveau réponse uniquement
+        except Exception as exc:  # fail-open at the response level only
             try:
                 self._json(502, {"error": {"message": f"jev-router: {exc}"}})
             except Exception:
@@ -314,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
             payload["reasoning"] = reasoning
         if speed:
             payload["service_tier"] = speed
-        payload["stream"] = True  # l'edge local exige le streaming
+        payload["stream"] = True  # the local caller edge requires streaming
 
         out_path = path if path.startswith("/v1") else "/v1" + path
         body = json.dumps(payload).encode("utf-8")
@@ -332,10 +333,10 @@ class Handler(BaseHTTPRequestHandler):
             resp = conn.getresponse()
             status = resp.status
             ctype = (resp.getheader("Content-Type") or "").strip()
-            # L'edge local ne pose AUCUN Content-Type sur les flux SSE. Pour une
-            # requête stream, une réponse 200 EST un flux SSE : on force
-            # l'en-tête de sortie, car le forwarder choisit son parseur dessus
-            # (text/event-stream → relais SSE, application/json → parse JSON).
+            # The local caller edge sets NO Content-Type on SSE streams. For a
+            # streaming request, a 200 response IS an SSE stream: force the
+            # outgoing header, because the forwarder picks its parser from it
+            # (text/event-stream → SSE relay, application/json → JSON parse).
             is_sse = ("text/event-stream" in ctype) or (status == 200 and stream_requested)
             out_kind = ""
 

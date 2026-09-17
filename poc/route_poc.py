@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Jev Codex Router — POC (politique de route par défaut).
+"""Jev Codex Router — POC (default routing policy).
 
-Politique de route:
-  luna  -> thinking max SYSTÉMATIQUE + speed priority (surcoût 2x négligeable)
-  sol   -> thinking adaptatif (selon la tâche) + speed default
-  astra -> thinking adaptatif (selon la tâche) + speed default
+Default routing policy:
+  luna  -> ALWAYS max thinking + priority speed (2x cost is negligible)
+  sol   -> adaptive thinking (per task) + default speed
+  astra -> adaptive thinking (per task) + default speed
 
 Usage: python3 route_poc.py [--dry] [--tasks tasks.json] [--model jev-latest]
-Clé: $TYPESAFE_API_KEY, sinon ~/.hermes/.env, sinon ~/.jev.env.
+Key lookup: $TYPESAFE_API_KEY, then ~/.hermes/.env, then ~/.jev.env.
 """
 import argparse, json, math, os, sys, time, urllib.error, urllib.request
 
@@ -21,9 +21,9 @@ CANDIDATES = {
 
 DEPTH_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
-# --- politique de route (17/09) ---
-SPEED_TIER_MODEL = "gpt-5.6-luna"          # speed=priority réservé à Luna
-LUNA_EFFORT = "max"                        # Luna toujours en thinking max
+# --- default routing policy ---
+SPEED_TIER_MODEL = "gpt-5.6-luna"          # speed=priority is reserved for Luna
+LUNA_EFFORT = "max"                        # Luna always runs max thinking
 SOL_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 ASTRA_LEVELS = ["medium", "high", "xhigh", "max"]
 
@@ -36,7 +36,7 @@ def clamp(level, allowed):
     return min(allowed, key=lambda l: abs(DEPTH_LEVELS.index(l) - target))
 
 def route_for(tier, depth):
-    """(model, effort, speed) selon la politique."""
+    """(model, effort, speed) per the routing policy."""
     if tier == SPEED_TIER_MODEL:
         return tier, LUNA_EFFORT, "priority"
     if tier == "gpt-5.6-sol":
@@ -69,7 +69,7 @@ def questions():
     }
 
 def load_key():
-    """Priorité au fichier (l'environnement peut être pollué), env en dernier recours."""
+    """The file wins (the environment can be polluted); env as a last resort."""
     for path in ("~/.hermes/.env", "~/.jev.env"):
         p = os.path.expanduser(path)
         if os.path.exists(p):
@@ -118,7 +118,7 @@ def run(args):
     tasks = json.load(open(args.tasks, encoding="utf-8"))
     key = load_key()
     if not args.dry and not key:
-        print("!! TYPESAFE_API_KEY introuvable (env, ~/.hermes/.env, ~/.jev.env). --dry pour valider les payloads.")
+        print("!! TYPESAFE_API_KEY not found (env, ~/.hermes/.env, ~/.jev.env). Use --dry to validate payloads.")
         return 2
     q = questions()
     results = []
@@ -142,17 +142,17 @@ def run(args):
                             "depth": depth_level, "model": model, "effort": effort, "speed": speed,
                             "expect": str(t.get("expect")), "ms": ms,
                             "in_tok": usage.get("input_tokens") or usage.get("inputTokens")})
-            flag = "" if str(t.get("expect")) == tier["choice"] else f"  (attendu: {t.get('expect')})"
+            flag = "" if str(t.get("expect")) == tier["choice"] else f"  (expected: {t.get('expect')})"
             print(f"#{t['id']:>3}  {tier['choice']:<14} conf={tier['confidence']:.2f}  depth={str(depth_level):<6} -> {model} @{effort} [{speed}]  {ms} ms{flag}")
         except Exception as e:
-            print(f"#{t['id']:>3}  ERREUR: {e}")
+            print(f"#{t['id']:>3}  ERROR: {e}")
     if results:
         import statistics
         total_tok = sum((r["in_tok"] or 0) for r in results)
         lat = [r["ms"] for r in results]
         agree = sum(1 for r in results if r.get("expect") == r["tier"])
         print("-" * 78)
-        print(f"{len(results)} tâches · latence médiane {statistics.median(lat):.0f} ms · {total_tok} tokens in (≈ ${total_tok/1e6*0.042:.5f}) · accord tier {agree}/{len(results)}")
+        print(f"{len(results)} tasks · median latency {statistics.median(lat):.0f} ms · {total_tok} tokens in (≈ ${total_tok/1e6*0.042:.5f}) · tier agreement {agree}/{len(results)}")
     return 0
 
 def main():
