@@ -8,7 +8,7 @@ verification step after each stage — they are what makes autonomy safe here.
 ## What you are installing
 
 A local server plus a Codex Router extension that adds one model to the Codex
-picker — **"Jev Auto"** (`jev/auto`). Every turn sent to it is classified by
+picker — **"Jev Codex Router v1"** (`jev/auto`). Every turn sent to it is classified by
 [Jev](https://docs.typesafe.ai) (TypeSafe System One) and served by the
 cheapest model that can handle it, at a thinking depth adapted to the task.
 All traffic stays on loopback; the design is fail-open; there is a kill switch.
@@ -69,7 +69,7 @@ it already has `models`, append to the array instead of overwriting):
       "upstreamModel": "auto",
       "provider": "jev",
       "listed": true,
-      "displayName": "Jev Auto",
+      "displayName": "Jev Codex Router v1",
       "description": "Auto-routing by Jev (TypeSafe): every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
       "priority": 95,
       "defaultEffort": "medium",
@@ -127,7 +127,7 @@ silent when healthy, restarts the server when down.
 ### 7 — Restart Codex
 
 Fully quit and reopen the Codex app so it reloads the picker catalog, then the
-user can select **Jev Auto**.
+user can select **Jev Codex Router v1**.
 
 ## End-to-end verification (must pass before declaring success)
 
@@ -163,7 +163,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   (`jev-router.codex-dry.json`) and is cleared by the next successful native
   call. Log fields to watch: `dry`, `native`, `retried`.
 - **Thread display**: streamed reasoning summaries get the routed tag appended
-  in place ( · ⚡sol:low) — the picked model shows inside each call's thinking
+  in place ( · 🧠sol:low · , separators on both sides so the next summary part
+  never glues to the tag; one glyph per route — ⚡luna, 🧠sol, 🚀astra,
+  🐳deepseek/✨glm in tandem) — the picked model shows inside each call's thinking
   block in the Codex thread.
 - **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
   are logged (`would` field) while every call is still served by astra.
@@ -184,7 +186,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 | `{"detail":"Unauthorized"}` from the caller edge | native sharing off | `./bin/codex-router chatgpt-session enable` |
 | `{"detail":"Stream must be set to true"}` | the caller edge streams only | send `"stream": true`; the bundled server forces it |
 | HTTP 502 `provider_api_proxy_error` on jev-auto | server-side error | check the `status`/`out` fields in `jev-router-live.jsonl`, and the server's stderr log |
-| "Jev Auto" absent from the picker | not published/visible, or Codex not restarted | `refresh-catalog`, `control picker set jev/auto show`, full Codex restart |
+| "Jev Codex Router v1" absent from the picker | not published/visible, or Codex not restarted | `refresh-catalog`, `control picker set jev/auto show`, full Codex restart |
 | Native 429 / "usage limit" while routing | ChatGPT usage window exhausted | expected: the Codex-dry tandem takes over (`jev-router.codex-dry.json`); delete the manual file to re-probe sooner |
 | `Unknown API gateway model: jev-auto` | catalog not republished | `./bin/codex-router refresh-catalog` |
 | Jev returns HTTP 422 | request body missing `"model"` | always send `"model": "jev-latest"` to the System One API |

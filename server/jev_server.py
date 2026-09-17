@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Jev Router — local server on 127.0.0.1:4319 for the Codex Router.
+"""Jev Codex Router v1 — local server on 127.0.0.1:4319 for the Codex Router.
 
 Receives Responses requests destined for the "jev/auto" model (the Codex
 Router's "jev" generic provider), asks Jev (TypeSafe System One) for a tier
@@ -33,7 +33,7 @@ route, but serve plain astra (quality-neutral data collection).
 Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
 (jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
 Display: streamed reasoning summaries get the routed tag appended in place
-( · ⚡sol:low) so the Codex thread shows the picked model per call.
+( · 🧠sol:low · ) so the Codex thread shows the picked model per call.
 Non-stream callers (auto-compaction checkpoints, litellm non-stream path)
 receive the SSE stream reassembled into a single JSON response object.
 Balance: quality-first. sol is the default workhorse, astra is reserved for
@@ -70,6 +70,9 @@ LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
+
+DISPLAY_NAME = "Jev Codex Router v1"
+VERSION = "1.0"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -375,17 +378,29 @@ def _debug_shape(payload):
     }
 
 
+ROUTE_GLYPHS = {
+    "gpt-5.6-luna": ("luna", "⚡"),      # fast lane, max thinking
+    "gpt-5.6-sol": ("sol", "🧠"),        # reasoning workhorse
+    "gpt-6-astra": ("astra", "🚀"),      # frontier
+    "gpt-5.6-terra": ("terra", "🌍"),
+}
+TANDEM_GLYPHS = {
+    "deepseek-v4.1-flash": ("deepseek", "🐳"),  # Go standard (native dry)
+    "glm-5.3-flash": ("glm", "✨"),             # Go frontier (native dry)
+}
+
+
 def route_marker(model, effort):
-    """Short visible tag for the routed call, e.g. ' · ⚡sol:low'."""
-    short = {
-        "gpt-5.6-luna": "luna",
-        "gpt-5.6-sol": "sol",
-        "gpt-6-astra": "astra",
-        "gpt-5.6-terra": "terra",
-    }.get(model)
+    """Visible tag for a routed call, separators on both sides: ' · 🧠sol:low · '.
+
+    The client concatenates reasoning summary parts with no separator, so the
+    tag has to carry its own trailing one (" · ") or it glues to the next part.
+    """
+    short, glyph = ROUTE_GLYPHS.get(model, (None, None))
     if not short:
-        short = (model or "?").split("/")[-1]
-    return f" · ⚡{short}" + (f":{effort}" if effort else "")
+        leaf = (model or "?").split("/")[-1]
+        short, glyph = TANDEM_GLYPHS.get(leaf, (leaf, "⚡"))
+    return f" · {glyph}{short}" + (f":{effort}" if effort else "") + " · "
 
 
 class SummaryMarker:
@@ -623,11 +638,11 @@ class Handler(BaseHTTPRequestHandler):
                     "object": "model",
                     "created": 1758000000,
                     "owned_by": "jev",
-                    "name": "Jev Auto",
+                    "name": DISPLAY_NAME,
                 }],
             })
         elif path in ("/health", ""):
-            self._json(200, {"ok": True, "service": "jev-router"})
+            self._json(200, {"ok": True, "service": "jev-router", "version": VERSION})
         else:
             self._json(404, {"error": {"message": "not found"}})
 

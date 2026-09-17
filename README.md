@@ -136,7 +136,7 @@ cd <codex-router checkout>
       "upstreamModel": "auto",
       "provider": "jev",
       "listed": true,
-      "displayName": "Jev Auto",
+      "displayName": "Jev Codex Router v1",
       "description": "Auto-routing by Jev: every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
       "priority": 95,
       "defaultEffort": "medium",
@@ -161,7 +161,7 @@ cd <codex-router checkout>
 ./bin/control picker set jev/auto show
 ```
 
-**4. Quit and reopen Codex**, then pick **“Jev Auto”** in the model picker.
+**4. Quit and reopen Codex**, then pick **“Jev Codex Router v1”** in the model picker.
 Every turn now gets its own route.
 
 **5. Make it permanent** (optional but recommended): run the service installer
@@ -180,7 +180,7 @@ stops answering.
 | Action | Command |
 |---|---|
 | Watch decisions | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
-| See the picked model in the thread | reasoning summaries carry ` · ⚡sol:low` appended per call |
+| See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (fast) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug capture (shapes + raw streams) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
