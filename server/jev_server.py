@@ -11,8 +11,13 @@ Default routing policy:
   luna  → always max thinking + priority speed (the 2x cost is negligible)
   sol   → adaptive thinking depth (Jev) + standard speed
   astra → adaptive thinking depth (Jev) + standard speed
-  conf < 0.5 → HOLD: fall back to the middle tier (sol) — anti-downgrade
-  without burning the frontier (backtest-calibrated: −12% → −60% vs full-Astra).
+  conf < 0.5 → HOLD: middle tier (sol) — anti-downgrade without burning the
+  frontier (backtest-calibrated: −12% → −60% vs full-Astra) — with ONE
+  measured exception: a clean mechanical continuation (tool step, no error,
+  shallow depth) that Jev itself wanted on luna keeps luna on the fast lane.
+  Live data (1 day, 1 065 calls): without it, 59% of calls were held to sol,
+  including 173/day of luna-on-mechanics picks that luna could serve at
+  ~1/10th of sol's rates.
 
 Per-call awareness (v2): every request is classified as a fresh user turn, a
 tool-step continuation, or other. Tool-steps carry a digest of the last tool
@@ -215,11 +220,26 @@ def clamp_effort(depth):
     return depth if depth in EFFORTS else "medium"
 
 
-def route(tier, depth, conf):
-    """Apply the routing policy. Returns (model, effort, speed, gate)."""
+def route(tier, depth, conf, step=None):
+    """Apply the routing policy. Returns (model, effort, speed, gate).
+
+    Below the confidence gate the middle tier is the safe default, with one
+    measured exception: a clean mechanical continuation (tool step, no error,
+    shallow depth) that Jev itself wanted on luna keeps luna — that is the
+    tier's stated job, and luna runs on the priority fast lane at ~1/10th of
+    sol's rates.
+    """
     if conf is not None and conf < CONF_GATE:
         # Backtest finding: falling back to astra ate ~80% of the savings;
         # the middle tier keeps the anti-downgrade property without burning the frontier.
+        if (
+            tier == LUNA
+            and isinstance(step, dict)
+            and step.get("step_type") == "tool_step"
+            and not step.get("errored")
+            and (depth or "low") in ("low", "medium")
+        ):
+            return LUNA, "max", "priority", "hold(luna_step)"
         return SOL, clamp_effort(depth), "default", "hold(sol)"
     if tier == LUNA:
         return LUNA, "max", "priority", "apply"
@@ -678,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
                         conf = None
                     depth_ans = answer.get("depth") or {}
                     depth = depth_ans.get("choice")
-                    model, effort, speed, gate = route(tier, depth, conf)
+                    model, effort, speed, gate = route(tier, depth, conf, step)
                 except Exception as exc:
                     model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
                 jev_ms = int((time.time() - jt0) * 1000)

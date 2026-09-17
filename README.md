@@ -58,6 +58,12 @@ downgrade**: the turn falls back to the **middle tier** (Sol) and the decision
 is logged — a backtest over real sessions showed that falling back to the
 frontier model instead eats ~80% of the savings (see `poc/BACKTEST.md`).
 
+One measured exception: a **clean mechanical continuation** (tool step, no
+error, low/medium depth) that Jev wanted on **Luna** keeps Luna on the priority
+lane. Live data (1 day, 1 065 calls) showed 59% of calls were otherwise held to
+Sol, including ~173/day of Luna-on-mechanics picks (~10× cheaper on Luna) —
+those now log as `hold(luna_step)`.
+
 ### Codex-dry tandem — only while native usage is exhausted
 
 The triptych is the policy **unless** the ChatGPT usage window is exhausted
