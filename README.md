@@ -6,6 +6,9 @@ Every turn is classified by Jev and served by the cheapest model that can handle
 it, at a thinking depth adapted to the task — instead of running everything on
 the frontier model. The decision costs ≈ $0.00003 and ≈ 0.6 s per turn.
 
+**Measured savings: ≈ −60 % vs a full-frontier baseline** on a 7-day replay of
+237 real turns — protocol, tables and limitations in [BACKTEST.md](BACKTEST.md).
+
 This is not a fork of any router: it plugs into an existing local
 **Codex Router** installation through its official extension points
 (a *generic provider* + a *curated model*), so router updates never overwrite it.
@@ -43,16 +46,17 @@ Codex ──▶ Codex Router (:4202)
 | Hard / ambiguous | `gpt-6-astra` | adaptive (Jev depth) | standard |
 
 When Jev's confidence is below the gate (`0.5`, tunable), the router **does not
-downgrade**: the turn goes to the frontier model and the decision is logged for
-calibration.
+downgrade**: the turn falls back to the **middle tier** (Sol) and the decision
+is logged — a backtest over real sessions showed that falling back to the
+frontier model instead eats ~80% of the savings (see `poc/BACKTEST.md`).
 
 ## Repository layout
 
 ```
-poc/       Step 1 — tiering proof-of-concept (route tasks, measure decisions)
-poc/       Step 2a — shadow replay: route your real Codex sessions offline
-server/    Step 2b — the live server + service install (this is what runs)
-hook/      Explored alternative (LiteLLM callback tap) — kept for reference
+BACKTEST.md  Savings backtest — protocol, tables, limitations (the "proof")
+poc/         Tiering POC, shadow replay, and the backtest tool
+server/      The live server + service install (this is what runs)
+hook/        Explored alternative (LiteLLM callback tap) — kept for reference
 ```
 
 ## Quickstart

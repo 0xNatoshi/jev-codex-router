@@ -11,7 +11,8 @@ Politique de route par défaut :
   luna  → thinking max systématique + speed priority (le 2x ne coûte rien)
   sol   → thinking adaptatif selon la tâche (depth Jev) + speed standard
   astra → thinking adaptatif selon la tâche (depth Jev) + speed standard
-  conf < 0.5 → HOLD : on ne dégrade pas (astra), loggé pour calibration.
+  conf < 0.5 → HOLD : fallback au tier du milieu (sol) — anti-dégradation
+  sans cramer le frontière (calibré par backtest 17/09 : −12% → −60% vs full-Astra).
 
 Fail-open : toute erreur Jev → astra @medium. Kill switch : créer le fichier
 ~/.codex/codex-router/jev-router.off → relais astra sans décision.
@@ -120,7 +121,9 @@ def clamp_effort(depth):
 def route(tier, depth, conf):
     """Applique la politique de route. Retourne (model, effort, speed, gate)."""
     if conf is not None and conf < CONF_GATE:
-        return ASTRA, clamp_effort(depth), "default", "hold(astra)"
+        # Backtest 17/09 : un fallback sur astra mangeait ~80% de l'économie ;
+        # le tier du milieu garde l'anti-dégradation sans cramer le frontière.
+        return SOL, clamp_effort(depth), "default", "hold(sol)"
     if tier == LUNA:
         return LUNA, "max", "priority", "apply"
     if tier == SOL:

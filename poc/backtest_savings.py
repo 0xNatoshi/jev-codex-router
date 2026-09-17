@@ -41,7 +41,8 @@ TAG_CLEAN = re.compile(r"<[^>]+>")
 def route_policy(tier, depth, conf, gate=CONF_GATE):
     """Politique prod : luna max+fast, sol/astra adaptatif, gate de confiance → astra."""
     if gate is not None and conf is not None and conf < gate:
-        return "gpt-6-astra"
+        # fallback recalibré 17/09 : tier du milieu, pas le haut (cf BACKTEST.md)
+        return "gpt-5.6-sol"
     if tier == "gpt-5.6-luna":
         return "gpt-5.6-luna"
     if tier == "gpt-5.6-sol":
@@ -170,8 +171,9 @@ def main():
         tok = tk["tok"]
         try:
             ca = cost(tk["model"], tok)
-            r_info = routes.get(tk["text"][:80].lower()) or {"route": "gpt-6-astra", "conf": None}
-            r = r_info["route"]
+            r_info = routes.get(tk["text"][:80].lower()) or {"tier": None, "conf": None, "depth": None}
+            r = ("gpt-6-astra" if r_info.get("tier") is None
+                 else route_policy(r_info["tier"], r_info.get("depth"), r_info.get("conf")))
             cj = cost(r, tok)
         except KeyError:
             skipped += 1

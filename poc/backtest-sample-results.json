@@ -1,0 +1,40 @@
+{
+  "at": "sample-run",
+  "days": 7,
+  "turns": 237,
+  "unique": 153,
+  "tokens": {
+    "input": 684114844,
+    "cached": 672275840,
+    "output": 1616250
+  },
+  "actual_usd": 802.28,
+  "jev_usd": 349.29,
+  "savings_pct": 56.5,
+  "scenarios_usd": {
+    "gpt-6-astra": 871.48,
+    "gpt-5.6-sol": 348.59,
+    "gpt-5.6-terra": 177.53,
+    "gpt-5.6-luna": 35.51,
+    "deepseek/deepseek-v4.1-flash": 12.83
+  },
+  "gate_scenarios_usd": {
+    "gate_off": 339.95,
+    "g0.25": 344.55,
+    "g0.35": 349.71,
+    "g0.5": 349.29,
+    "g0.65": 346.2,
+    "g0.5\u2192sol": 349.29,
+    "g0.35\u2192sol": 349.71,
+    "g0.25\u2192sol": 344.55
+  },
+  "full_astra_usd": 871.48,
+  "savings_vs_astra_pct": 59.9,
+  "gated_turns": 159,
+  "actual_models": {
+    "gpt-6-astra": 145,
+    "deepseek/deepseek-v4.1-flash": 7,
+    "gpt-5.6-sol": 85
+  },
+  "note": "Anonymised sample run: aggregate figures only. No prompts, paths, projects or session ids. See BACKTEST.md for protocol."
+}
