@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Jev Codex Router v1 — local server on 127.0.0.1:4319 for the Codex Router.
+"""Jev Codex Router — local server on 127.0.0.1:4319 for the Codex Router.
 
 Receives Responses requests destined for the "jev/auto" model (the Codex
 Router's "jev" generic provider), asks Jev (TypeSafe System One) for a tier
@@ -71,7 +71,7 @@ LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
-DISPLAY_NAME = "Jev Codex Router v1"
+DISPLAY_NAME = "Jev Codex Router"
 VERSION = "1.0"
 
 API = "https://api.typesafe.ai/v1/systemone"
@@ -400,7 +400,7 @@ def route_marker(model, effort):
     if not short:
         leaf = (model or "?").split("/")[-1]
         short, glyph = TANDEM_GLYPHS.get(leaf, (leaf, "⚡"))
-    return f" · {glyph}{short}" + (f":{effort}" if effort else "") + " · "
+    return f" · {glyph} {short}" + (f":{effort}" if effort else "") + " · "
 
 
 class SummaryMarker:

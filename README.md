@@ -136,7 +136,7 @@ cd <codex-router checkout>
       "upstreamModel": "auto",
       "provider": "jev",
       "listed": true,
-      "displayName": "Jev Codex Router v1",
+      "displayName": "Jev Codex Router",
       "description": "Auto-routing by Jev: every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
       "priority": 95,
       "defaultEffort": "medium",
@@ -161,7 +161,7 @@ cd <codex-router checkout>
 ./bin/control picker set jev/auto show
 ```
 
-**4. Quit and reopen Codex**, then pick **“Jev Codex Router v1”** in the model picker.
+**4. Quit and reopen Codex**, then pick **“Jev Codex Router”** in the model picker.
 Every turn now gets its own route.
 
 **5. Make it permanent** (optional but recommended): run the service installer
