@@ -1,0 +1,14 @@
+[
+  {"id": 1, "text": "Rename the variable `usr` to `user` in src/auth.ts and update all call sites.", "signals": {"length": "short", "files": 1, "code_edit": true}, "expect": "gpt-5.6-luna"},
+  {"id": 2, "text": "Format this config file and fix the lint errors.", "signals": {"length": "short", "code_edit": true}, "expect": "gpt-5.6-luna"},
+  {"id": 3, "text": "Write a one-line shell command that lists files modified in the last 24 hours, sorted by size.", "signals": {"length": "short", "code_edit": false}, "expect": "gpt-5.6-luna"},
+  {"id": 4, "text": "Add a --dry-run flag to the CLI that prints what would happen without touching anything.", "signals": {"length": "medium", "files": 2, "code_edit": true}, "expect": "gpt-5.6-sol"},
+  {"id": 5, "text": "Implement a sliding-window rate limiter middleware for our FastAPI service and wire it into the app.", "signals": {"length": "medium", "code_edit": true}, "expect": "gpt-5.6-sol"},
+  {"id": 6, "text": "Write unit tests for the parser module, including malformed inputs and empty files.", "signals": {"length": "medium", "code_edit": true}, "expect": "gpt-5.6-sol"},
+  {"id": 7, "text": "Refactor the reply-targeting module to use weighted scoring across topics; touches 3 files and the public API.", "signals": {"length": "medium", "files": 3, "code_edit": true}, "expect": "gpt-5.6-sol"},
+  {"id": 8, "text": "Update the README to document the new routing behavior and add examples.", "signals": {"length": "short", "code_edit": false}, "expect": "gpt-5.6-luna"},
+  {"id": 9, "text": "Debug an intermittent test failure in the order-sync module: sometimes the suite hangs on CI, locally it passes.", "signals": {"length": "medium", "ambiguity": "high", "code_edit": true}, "expect": "gpt-6-astra"},
+  {"id": 10, "text": "Design the architecture for a multi-tenant job queue with exactly-once semantics and dead-letter handling.", "signals": {"length": "medium", "design": true, "code_edit": false}, "expect": "gpt-6-astra"},
+  {"id": 11, "text": "Review this database migration script for correctness and safety before we run it on production.", "signals": {"length": "short", "risk": "high", "code_edit": false}, "expect": "gpt-6-astra"},
+  {"id": 12, "text": "Explain what this regex does, and whether it can catastrophically backtrack: ^(a+)+$", "signals": {"length": "short", "code_edit": false}, "expect": "gpt-5.6-sol"}
+]

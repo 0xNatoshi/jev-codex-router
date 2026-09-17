@@ -1,0 +1,16 @@
+# Local run artifacts (never published)
+shadow-log.jsonl
+*.jsonl
+*.log
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Secrets / local env
+.env
+*.secret
