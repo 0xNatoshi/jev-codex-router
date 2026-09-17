@@ -31,6 +31,9 @@ Display: streamed reasoning summaries get the routed tag appended in place
 ( · ⚡sol:low) so the Codex thread shows the picked model per call.
 Non-stream callers (auto-compaction checkpoints, litellm non-stream path)
 receive the SSE stream reassembled into a single JSON response object.
+Balance: quality-first. sol is the default workhorse, astra is reserved for
+genuinely hard steps, luna only fires on confident mechanical calls, and
+compaction checkpoints are pinned to sol @ high.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 """
 import codecs
@@ -582,6 +585,10 @@ class Handler(BaseHTTPRequestHandler):
         jev_ms = None
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, None, "off"
+        elif task.lstrip().startswith("You are creating a lossy continuation checkpoint"):
+            # Quality first: the checkpoint defines the continuation context, so
+            # compaction calls are pinned instead of left to the per-call judge.
+            model, effort, speed, gate = SOL, "high", "default", "compaction"
         else:
             key = load_key()
             if key and task:
