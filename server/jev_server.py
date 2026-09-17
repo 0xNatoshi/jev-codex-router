@@ -14,13 +14,23 @@ Default routing policy:
   conf < 0.5 → HOLD: fall back to the middle tier (sol) — anti-downgrade
   without burning the frontier (backtest-calibrated: −12% → −60% vs full-Astra).
 
-Fail-open: any Jev error → astra @medium. Kill switch: create the file
+Per-call awareness (v2): every request is classified as a fresh user turn, a
+tool-step continuation, or other. Tool-steps carry a digest of the last tool
+output plus an error flag into the Jev state, so Jev routes THIS step
+(mechanical continuation, standard next action, or frontier-worthy) instead
+of re-judging the session's original prompt. On live sessions (7 days):
+~92% of model calls are tool-steps — ~74% of the money weight.
+
+Fail-open: any Jev error → astra @medium. Kill switch: file
 ~/.codex/codex-router/jev-router.off → relay astra without a decision.
+Shadow: file ~/.codex/codex-router/jev-router.shadow → decide and log the
+route, but serve plain astra (quality-neutral data collection).
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 """
 import http.client
 import json
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -31,6 +41,7 @@ STATE = os.path.join(HOME, ".codex", "codex-router")
 ENV_PATH = os.path.join(HOME, ".hermes", ".env")
 CALLER_SECRET_PATH = os.path.join(STATE, "caller-secret")
 OFF_PATH = os.path.join(STATE, "jev-router.off")
+SHADOW_PATH = os.path.join(STATE, "jev-router.shadow")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
@@ -44,17 +55,21 @@ TIERS = (LUNA, SOL, ASTRA)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CONF_GATE = 0.5
 
+ERROR_RX = re.compile(
+    r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
+DIGEST_CHARS = 520
+
 QUESTIONS = {
     "tier": {
         "type": "choice",
         "instructions": (
-            "Which model tier should serve this coding task? "
-            "gpt-5.6-luna: fast and cheap, for mechanical or clearly scoped tasks (rename, format, "
-            "simple edits, explanations). "
-            "gpt-5.6-sol: workhorse for standard implementation work (features, multi-step edits, "
-            "refactors with clear scope). "
-            "gpt-6-astra: frontier model for hard problems (architecture, complex debugging, "
-            "ambiguous or risky changes)."
+            "Which model tier should serve this model call? This is one call inside an ongoing "
+            "coding-agent session. When the call directly follows a tool result, route THIS next "
+            "step only: mechanical continuations (running or re-running commands, applying a "
+            "prepared edit, checking output, routine file reads) are fine on gpt-5.6-luna; "
+            "standard next actions belong to gpt-5.6-sol; reserve gpt-6-astra for steps that need "
+            "frontier reasoning (complex debugging after failures, architecture, ambiguous or "
+            "risky changes). When the call starts a fresh user turn, route the task itself."
         ),
         "criteria": {
             LUNA: "Fast and cheap; mechanical or clearly scoped tasks.",
@@ -65,7 +80,8 @@ QUESTIONS = {
     "depth": {
         "type": "choice",
         "instructions": (
-            "What thinking depth does this task require? Set the thinking effort level: low = "
+            "What thinking depth does the next step require (for a fresh user turn, the task "
+            "itself)? Set the thinking effort level: low = "
             "straightforward, no deep reasoning; medium = some careful thought; high = substantial "
             "reasoning; xhigh = very deep reasoning; max = maximum depth for the hardest problems."
         ),
@@ -183,6 +199,54 @@ def extract(payload):
     }
 
 
+def _output_text(output):
+    """Best-effort text of a tool output item (str, list of parts, or dict)."""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in ("text", "output", "content"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        parts.append(value)
+                        break
+        return "\n".join(parts)
+    if isinstance(output, dict):
+        for key in ("text", "output", "content"):
+            value = output.get(key)
+            if isinstance(value, str):
+                return value
+        return json.dumps(output)[:4000]
+    return ""
+
+
+def classify(payload):
+    """What this model call is for, read off the input tail: user turn / tool step."""
+    inp = payload.get("input")
+    detail = {"step_type": "other", "digest": "", "errored": False, "n_items": 0}
+    if isinstance(inp, str):
+        detail["step_type"] = "user_turn"
+        return detail
+    if not isinstance(inp, list):
+        return detail
+    detail["n_items"] = len(inp)
+    last = inp[-1] if inp else None
+    if isinstance(last, dict):
+        ltype = last.get("type")
+        if ltype in ("function_call_output", "custom_tool_call_output"):
+            text = _output_text(last.get("output"))
+            detail["step_type"] = "tool_step"
+            detail["digest"] = text.strip()[-DIGEST_CHARS:] if text else ""
+            detail["errored"] = bool(ERROR_RX.search(text[-4000:]))
+        elif last.get("role") == "user":
+            detail["step_type"] = "user_turn"
+    return detail
+
+
 def assemble_sse(raw):
     """Rebuild the final response object from an SSE stream (non-stream requests)."""
     final = None
@@ -278,6 +342,7 @@ class Handler(BaseHTTPRequestHandler):
 
         t0 = time.time()
         task, prev_assistant, signals = extract(payload)
+        step = classify(payload)
         stream_requested = payload.get("stream") is True
 
         tier = depth = conf = None
@@ -288,9 +353,13 @@ class Handler(BaseHTTPRequestHandler):
             key = load_key()
             if key and task:
                 jt0 = time.time()
-                state = {"task": task[:500], "signals": signals}
+                state = {"task": task[:500], "signals": signals,
+                         "step": {"type": step["step_type"]}}
                 if prev_assistant:
                     state["previous_assistant"] = prev_assistant[-240:]
+                if step["step_type"] == "tool_step":
+                    state["step"]["last_tool_output_tail"] = step["digest"]
+                    state["step"]["contains_error"] = step["errored"]
                 try:
                     answer = (call_jev(key, state).get("answers") or {})
                     tier_ans = answer.get("tier") or {}
@@ -306,6 +375,11 @@ class Handler(BaseHTTPRequestHandler):
                 jev_ms = int((time.time() - jt0) * 1000)
             else:
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
+
+        would = None
+        if os.path.exists(SHADOW_PATH):
+            would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
+            model, effort, speed, gate = ASTRA, None, None, "shadow(astra)"
 
         payload["model"] = model
         if effort:
@@ -387,6 +461,10 @@ class Handler(BaseHTTPRequestHandler):
                 "uctype": ctype,
                 "n_items": signals.get("n_items"),
                 "img": signals.get("has_image"),
+                "step": step["step_type"],
+                "errored": step["errored"],
+                "digest_len": len(step["digest"]),
+                "would": would,
                 "task": task[:110],
             })
 
