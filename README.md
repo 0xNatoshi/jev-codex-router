@@ -1,5 +1,7 @@
 # Jev Codex Router
 
+[![ci](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml/badge.svg)](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml)
+
 **Per-turn model routing for Codex, driven by [Jev](https://docs.typesafe.ai) (TypeSafe System One).**
 
 Every turn is classified by Jev and served by the cheapest model that can handle
