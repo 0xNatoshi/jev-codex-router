@@ -29,6 +29,8 @@ Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
 (jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
 Display: streamed reasoning summaries get the routed tag appended in place
 ( · ⚡sol:low) so the Codex thread shows the picked model per call.
+Non-stream callers (auto-compaction checkpoints, litellm non-stream path)
+receive the SSE stream reassembled into a single JSON response object.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 """
 import codecs
@@ -468,6 +470,7 @@ def assemble_sse(raw):
     """Rebuild the final response object from an SSE stream (non-stream requests)."""
     final = None
     error = None
+    items = {}
     for line in raw.decode("utf-8", "replace").splitlines():
         if not line.startswith("data:"):
             continue
@@ -479,11 +482,15 @@ def assemble_sse(raw):
         except ValueError:
             continue
         etype = event.get("type") if isinstance(event, dict) else None
-        if etype == "response.completed":
+        if etype == "response.output_item.done" and isinstance(event.get("item"), dict):
+            items[event.get("output_index") or 0] = event["item"]
+        elif etype == "response.completed":
             final = event.get("response")
         elif isinstance(etype, str) and etype in ("response.failed", "error"):
             error = event
     if final is not None:
+        if not final.get("output") and items:
+            final["output"] = [items[i] for i in sorted(items)]
         return final
     if error is not None:
         return {"error": error}
@@ -683,7 +690,11 @@ class Handler(BaseHTTPRequestHandler):
                 out_kind = "json"
                 data = resp.read()
                 out_ctype = ctype or "application/json"
-                if status == 200 and is_sse and not stream_requested:
+                # The caller edge always streams; rebuild a proper single JSON
+                # object for non-stream callers (compactions, litellm's
+                # non-stream provider path) instead of forwarding raw SSE bytes.
+                head = data[:64].lstrip()
+                if status == 200 and (head.startswith(b"event:") or head.startswith(b"data:")):
                     assembled = assemble_sse(data)
                     if assembled is not None:
                         data = json.dumps(assembled).encode("utf-8")
