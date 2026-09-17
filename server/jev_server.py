@@ -35,6 +35,14 @@ Balance: quality-first. sol is the default workhorse, astra is reserved for
 genuinely hard steps, luna only fires on confident mechanical calls, and
 compaction checkpoints are pinned to sol @ high.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
+
+Codex-dry tandem: when native usage is exhausted — a manual flag file
+(~/.codex/codex-router/jev-router.codex-dry) or an observed quota failure
+(429 / usage-limit body) — the triptych is replaced until the window resets:
+frontier-tier (astra) calls go to GLM (opencode-go/glm-5.3-flash), every
+other tier to deepseek (opencode-go/deepseek-v4.1-flash). A quota failure
+flips the state and retries the same call on the tandem; a successful native
+call clears an auto state (never the manual flag).
 """
 import codecs
 import http.client
@@ -65,6 +73,15 @@ LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TIERS = (LUNA, SOL, ASTRA)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CONF_GATE = 0.5
+
+# Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
+GO_STANDARD = "opencode-go/deepseek-v4.1-flash"
+GO_FRONTIER = "opencode-go/glm-5.3-flash"
+DRY_MANUAL_PATH = os.path.join(STATE, "jev-router.codex-dry")
+DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
+DRY_COOLDOWN_S = 30 * 60
+QUOTA_RX = re.compile(
+    r"(?i)(rate[ _-]?limit|out_of_usage|usage limit|hit your usage|insufficient_quota|quota)")
 
 ERROR_RX = re.compile(
     r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
@@ -128,6 +145,58 @@ def load_key():
 def caller_secret():
     with open(CALLER_SECRET_PATH, encoding="utf-8") as fh:
         return fh.read().strip()
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def native_dry():
+    """Reason native usage is considered exhausted, or None while it is fine.
+
+    The manual flag wins; the auto state carries an expiry so a stale flip
+    can never pin the router to the tandem forever.
+    """
+    if os.path.exists(DRY_MANUAL_PATH):
+        return "manual"
+    state = _read_json(DRY_STATE_PATH)
+    if isinstance(state, dict) and float(state.get("until") or 0) > time.time():
+        return str(state.get("reason") or "quota")
+    return None
+
+
+def mark_native_dry(reason, resets_at=None):
+    until = resets_at if (resets_at and resets_at > time.time() + 60) else time.time() + DRY_COOLDOWN_S
+    try:
+        tmp = DRY_STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({
+                "reason": reason,
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "until": until,
+                "until_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)),
+            }, fh)
+        os.replace(tmp, DRY_STATE_PATH)
+    except OSError:
+        pass
+
+
+def clear_native_dry():
+    try:
+        os.remove(DRY_STATE_PATH)
+    except OSError:
+        pass
+
+
+def dry_target(native_model, effort):
+    """Codex-dry tandem: frontier-tier steps -> GLM, everything else -> deepseek."""
+    if native_model == ASTRA:
+        return GO_FRONTIER, effort or "high"
+    return GO_STANDARD, effort or "medium"
 
 
 def call_jev(key, state, timeout=4.0):
@@ -621,20 +690,90 @@ class Handler(BaseHTTPRequestHandler):
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
             model, effort, speed, gate = ASTRA, None, None, "shadow(astra)"
 
+        # Codex-dry tandem: ONLY while native usage is exhausted (manual flag or
+        # observed quota failure) the triptych is replaced — GLM for frontier
+        # steps, deepseek for the rest. Otherwise luna/sol/astra run untouched.
+        dry_reason = native_dry()
+        native_model = model
+        if dry_reason and model in TIERS:
+            model, effort = dry_target(native_model, effort)
+            speed = None
+            gate = f"codex_dry({dry_reason}):{native_model}"
+
         shown = would if would else {"model": model, "effort": effort}
         marker = route_marker(shown["model"], shown["effort"])
 
-        payload["model"] = model
-        if effort:
-            reasoning = payload.get("reasoning")
-            reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-            reasoning["effort"] = effort
-            payload["reasoning"] = reasoning
-        if speed:
-            payload["service_tier"] = speed
-        payload["stream"] = True  # the local caller edge requires streaming
+        def apply_route(payload, model, effort, speed):
+            payload["model"] = model
+            if effort:
+                reasoning = payload.get("reasoning")
+                reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
+                reasoning["effort"] = effort
+                payload["reasoning"] = reasoning
+            if speed:
+                payload["service_tier"] = speed
+            else:
+                payload.pop("service_tier", None)
+            payload["stream"] = True  # the local caller edge requires streaming
+            return payload
+
+        apply_route(payload, model, effort, speed)
 
         out_path = path if path.startswith("/v1") else "/v1" + path
+        status, out_kind, ctype, quota_hit = self._forward(
+            payload, out_path, stream_requested, debug, marker, model)
+        retried = False
+        if quota_hit and not dry_reason:
+            # Native usage is exhausted: flip to the Go tandem and retry this very
+            # call so the turn does not fail (nothing reached the client yet).
+            mark_native_dry("quota")
+            model, effort = dry_target(native_model, effort)
+            apply_route(payload, model, effort, None)
+            retried = True
+            gate = f"codex_dry(retry):{native_model}"
+            marker = route_marker(model, effort)
+            status, out_kind, ctype, _ = self._forward(
+                payload, out_path, stream_requested, debug, marker, model)
+        elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
+            # Native answered again: drop the stale auto state (never the flag).
+            clear_native_dry()
+            dry_reason = "cleared"
+
+        log_line({
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "gate": gate,
+            "tier": tier,
+            "conf": conf,
+            "depth": depth,
+            "model": model,
+            "effort": effort,
+            "speed": speed,
+            "native": native_model,
+            "dry": dry_reason,
+            "retried": retried,
+            "jev_ms": jev_ms,
+            "total_ms": int((time.time() - t0) * 1000),
+            "status": status,
+            "stream": stream_requested,
+            "out": out_kind,
+            "uctype": ctype,
+            "n_items": signals.get("n_items"),
+            "img": signals.get("has_image"),
+            "step": step["step_type"],
+            "errored": step["errored"],
+            "digest_len": len(step["digest"]),
+            "would": would,
+            "task": task[:110],
+        })
+
+    def _forward(self, payload, out_path, stream_requested, debug, marker, model):
+        """One relay attempt to the local caller edge, streamed straight back.
+
+        Returns (status, out_kind, ctype, quota_hit). ``quota_hit`` is True only
+        for a >=400 response whose body looks like exhausted native usage; in
+        that case nothing has been written to the client yet, so the caller can
+        retry the same payload on another model.
+        """
         body = json.dumps(payload).encode("utf-8")
         conn = http.client.HTTPConnection(*ROUTER, timeout=900)
         status = 0
@@ -697,10 +836,12 @@ class Handler(BaseHTTPRequestHandler):
                 out_kind = "json"
                 data = resp.read()
                 out_ctype = ctype or "application/json"
+                head = data[:64].lstrip()
+                if status >= 400 and (status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace"))):
+                    return status, out_kind, ctype, True
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
                 # non-stream provider path) instead of forwarding raw SSE bytes.
-                head = data[:64].lstrip()
                 if status == 200 and (head.startswith(b"event:") or head.startswith(b"data:")):
                     assembled = assemble_sse(data)
                     if assembled is not None:
@@ -711,31 +852,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+            return status, out_kind, ctype, False
         finally:
             conn.close()
-            log_line({
-                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "gate": gate,
-                "tier": tier,
-                "conf": conf,
-                "depth": depth,
-                "model": model,
-                "effort": effort,
-                "speed": speed,
-                "jev_ms": jev_ms,
-                "total_ms": int((time.time() - t0) * 1000),
-                "status": status,
-                "stream": stream_requested,
-                "out": out_kind,
-                "uctype": ctype,
-                "n_items": signals.get("n_items"),
-                "img": signals.get("has_image"),
-                "step": step["step_type"],
-                "errored": step["errored"],
-                "digest_len": len(step["digest"]),
-                "would": would,
-                "task": task[:110],
-            })
 
 
 def main():

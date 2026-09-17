@@ -154,6 +154,14 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   routed turn.
 - **Kill switch** (instant, no restart): `touch ~/.codex/codex-router/jev-router.off`
   → the server relays to astra without calling Jev. Remove the file to re-enable.
+- **Codex-dry tandem** (only while native usage is exhausted):
+  `touch ~/.codex/codex-router/jev-router.codex-dry` → frontier-tier calls go to
+  `opencode-go/glm-5.3-flash`, every other tier to
+  `opencode-go/deepseek-v4.1-flash`; remove the file to return to the
+  luna/sol/astra triptych. An automatic flip (429 / usage-limit response) also
+  retries the failed call on the tandem, expires after 30 minutes
+  (`jev-router.codex-dry.json`) and is cleared by the next successful native
+  call. Log fields to watch: `dry`, `native`, `retried`.
 - **Thread display**: streamed reasoning summaries get the routed tag appended
   in place ( · ⚡sol:low) — the picked model shows inside each call's thinking
   block in the Codex thread.
@@ -177,6 +185,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 | `{"detail":"Stream must be set to true"}` | the caller edge streams only | send `"stream": true`; the bundled server forces it |
 | HTTP 502 `provider_api_proxy_error` on jev-auto | server-side error | check the `status`/`out` fields in `jev-router-live.jsonl`, and the server's stderr log |
 | "Jev Auto" absent from the picker | not published/visible, or Codex not restarted | `refresh-catalog`, `control picker set jev/auto show`, full Codex restart |
+| Native 429 / "usage limit" while routing | ChatGPT usage window exhausted | expected: the Codex-dry tandem takes over (`jev-router.codex-dry.json`); delete the manual file to re-probe sooner |
 | `Unknown API gateway model: jev-auto` | catalog not republished | `./bin/codex-router refresh-catalog` |
 | Jev returns HTTP 422 | request body missing `"model"` | always send `"model": "jev-latest"` to the System One API |
 | Native calls fail after a few days | shared session expired | re-run `chatgpt-session enable` |

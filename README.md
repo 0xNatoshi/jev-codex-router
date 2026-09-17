@@ -37,6 +37,11 @@ Codex ──▶ Codex Router (:4202)
   relayed verbatim, so tool calls, reasoning and compaction behave natively.
 - **Fail-open** — any Jev error keeps the turn alive (safe fallback route).
 - **Kill switch** — a sentinel file routes without Jev, instantly.
+- **Codex-dry tandem** — when native (ChatGPT) usage is exhausted (sentinel
+  file, or an observed 429 / usage-limit response), the triptych is replaced:
+  GLM (`opencode-go/glm-5.3-flash`) for frontier-tier steps, deepseek
+  (`opencode-go/deepseek-v4.1-flash`) for everything else. The failed call is
+  retried on the tandem; the next successful native call clears an auto flip.
 - **Decision log** — every routed turn is logged locally for calibration
   (`~/.codex/codex-router/jev-router-live.jsonl`), never published.
 
@@ -52,6 +57,20 @@ When Jev's confidence is below the gate (`0.5`, tunable), the router **does not
 downgrade**: the turn falls back to the **middle tier** (Sol) and the decision
 is logged — a backtest over real sessions showed that falling back to the
 frontier model instead eats ~80% of the savings (see `poc/BACKTEST.md`).
+
+### Codex-dry tandem — only while native usage is exhausted
+
+The triptych is the policy **unless** the ChatGPT usage window is exhausted
+(manual sentinel file, or an automatic flip on a 429 / usage-limit response,
+which also retries the failed call on the tandem). While dry:
+
+| Native tier | Dry substitute |
+|---|---|
+| `gpt-6-astra` (frontier) | `opencode-go/glm-5.3-flash` |
+| `gpt-5.6-sol` / `gpt-5.6-luna` | `opencode-go/deepseek-v4.1-flash` |
+
+An automatic flip expires after 30 minutes (re-probe) and is cleared by the
+first successful native call; the manual sentinel file is never auto-cleared.
 
 ## Repository layout
 
@@ -159,6 +178,8 @@ stops answering.
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug capture (shapes + raw streams) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
+| Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/sol/astra) |
+| Inspect the dry auto state | `cat ~/.codex/codex-router/jev-router.codex-dry.json` (reason + expiry; auto-cleared by the next successful native call) |
 | Hide the model | `./bin/control picker set jev/auto hide` |
 | Disable the provider | `./bin/codex-router providers generic disable jev` |
 | Revoke native sharing | `./bin/codex-router chatgpt-session disable` |
