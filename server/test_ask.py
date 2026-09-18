@@ -202,11 +202,31 @@ class AskEndpointTests(unittest.TestCase):
                 b"POST /ask HTTP/1.1\r\nHost: localhost\r\n"
                 b"Content-Length: 999999999\r\n\r\n"
             )
-            head = connection.recv(4096)
+            # The refusal can arrive split across segments, and the server closes
+            # the connection right after it: read the header block, then the body
+            # its Content-Length announces, instead of trusting one recv.
+            answer = b""
+            while b"\r\n\r\n" not in answer:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                answer += chunk
+            head, _, body = answer.partition(b"\r\n\r\n")
+            declared = [
+                line.split(b": ", 1)[1]
+                for line in head.split(b"\r\n")
+                if line.lower().startswith(b"content-length: ")
+            ]
+            wanted = int(declared[0]) if declared else 0
+            while len(body) < wanted:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
         finally:
             connection.close()
         self.assertIn(b" 413 ", head)
-        self.assertIn(b"too large", head)
+        self.assertIn(b"too large", body)
 
 
 if __name__ == "__main__":
