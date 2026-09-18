@@ -153,6 +153,25 @@ class TandemHandoff(unittest.TestCase):
         self.assertEqual(ids, ["resp_created", "resp_created"])
         self.assertIn(b"data: [DONE]", body)
 
+    def test_an_expired_flip_is_served_natively_and_the_state_is_dropped(self):
+        # The window reopened: the first call after it probes the triptych again
+        # (not the tandem), is served there, and the stale auto state goes away.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "dry.json")
+            saved = (jev.native_dry, jev.DRY_STATE_PATH, jev.DRY_MANUAL_PATH)
+            jev.native_dry = self.saved[3]  # the real reader, over the temp paths
+            jev.DRY_STATE_PATH = state
+            jev.DRY_MANUAL_PATH = os.path.join(tmp, "flag")
+            with open(state, "w", encoding="utf-8") as fh:
+                json.dump({"reason": "quota", "at": "earlier", "until": time.time() - 1}, fh)
+            try:
+                status, body = self.call()
+                self.assertEqual(status, 200, body)
+                self.assertEqual([model for model, _ in Edge.attempts], [jev.ASTRA])
+                self.assertFalse(os.path.exists(state), "the stale flip must be dropped")
+            finally:
+                jev.native_dry, jev.DRY_STATE_PATH, jev.DRY_MANUAL_PATH = saved
+
     def test_a_quota_flip_lasts_until_the_edge_says_the_window_reopens(self):
         # The first attempt is a native tier (no Jev key in this harness), the
         # edge refuses it with the reset instant, and the flip must record that
