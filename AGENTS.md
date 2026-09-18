@@ -17,11 +17,16 @@ All traffic stays on loopback; the design is fail-open; there is a kill switch.
 
 1. **Never print, log, commit, or transmit secrets** — the TypeSafe API key,
    the router `caller-secret`, or ChatGPT tokens. Reference them by file path.
-2. **Never edit router-owned files**: `litellm.yaml` under the router's state
-   directory, anything under `<router checkout>/src/`, or the
-   `codex-router-managed` blocks of `~/.codex/config.toml`. The router
-   regenerates or oversees them; edit only through its CLI and documented
-   state files (`user-models.json`, `generic-providers.json` via CLI).
+2. **Edit the source, never the artifact.** `<router checkout>/src/` is the
+   router's own source and is meant to be edited: a behaviour bug is fixed
+   there, committed on the checkout's branch, with the tests that cover it.
+   What is off limits is the *generated and managed* output — `litellm.yaml`
+   under the router's state directory is rendered from `src/litellm-config.mjs`
+   whenever the catalog changes, and the `codex-router-managed` blocks of
+   `~/.codex/config.toml` are written by the CLI, so a hand edit there is
+   overwritten rather than applied. Change the generator, or drive the CLI and
+   the documented state files (`user-models.json`, `generic-providers.json`),
+   and leave the artifacts to be regenerated.
 3. The server binds `127.0.0.1` only. Never expose it on another interface.
 4. If `launchctl` is restricted in your environment (supervised agents often),
    skip the service install — use the watchdog pattern and let the user run

@@ -47,7 +47,12 @@ Codex-dry tandem: when native usage is exhausted — a manual flag file
 frontier-tier (astra) calls go to GLM (opencode-go/glm-5.3-flash), every
 other tier to deepseek (opencode-go/deepseek-v4.1-flash). A quota failure
 flips the state and retries the same call on the tandem; a successful native
-call clears an auto state (never the manual flag).
+call clears an auto state (never the manual flag). A tandem call that comes
+back retryable (429/5xx) is tried once on the sibling model, because the two Go
+models are metered separately and a spent allowance is reported the same way a
+transient outage is. The decided depth travels with the call, mapped onto the Go
+ladder (low/high/max): a low step stays low, medium and high become high, and
+xhigh or above become max.
 """
 import codecs
 import http.client
@@ -85,6 +90,25 @@ CONF_GATE = 0.5
 # Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
 GO_STANDARD = "opencode-go/deepseek-v4.1-flash"
 GO_FRONTIER = "opencode-go/glm-5.3-flash"
+GO_TANDEM = (GO_STANDARD, GO_FRONTIER)
+# The tandem's own thinking ladder. Both Go models declare low/high/max where the
+# native triptych exposes low/medium/high/xhigh/max, so a depth keeps its meaning
+# by landing on the middle rung instead of collapsing onto the floor: Jev says
+# "medium" about work it wants done carefully, and DeepSeek documents its `low`
+# as "no deep reasoning needed". The API forwarder clamps the value a second time
+# onto the route's declared ladder, so nothing off-ladder can reach a provider.
+TANDEM_EFFORT = {
+    "none": "low", "minimal": "low", "low": "low",
+    "medium": "high", "high": "high",
+    "xhigh": "max", "max": "max", "ultra": "max",
+}
+# A status the *other* half of the tandem might still answer. opencode Go meters
+# the two Go models against separate allowances, and its gateway reports a spent
+# allowance with the same 429/503 shape as a transient one, so one more attempt
+# on the sibling model is worth it before the turn is lost. Nothing has reached
+# the client at this point: the forwarder only returns a retryable status before
+# it writes anything.
+RETRYABLE_TANDEM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 DRY_MANUAL_PATH = os.path.join(STATE, "jev-router.codex-dry")
 DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
 DRY_COOLDOWN_S = 30 * 60
@@ -200,15 +224,29 @@ def clear_native_dry():
         pass
 
 
+def tandem_effort(effort, native_model=None):
+    """Map a decided depth onto the rungs the Go tandem accepts."""
+    if effort in TANDEM_EFFORT:
+        return TANDEM_EFFORT[effort]
+    # An absent or unknown depth keeps the tier's own habit: the frontier goes as
+    # deep as it can, everything else starts at the middle rung.
+    return "max" if native_model == ASTRA else "high"
+
+
+def other_tandem(target):
+    """The sibling Go model, for one bounded fallback attempt."""
+    return GO_FRONTIER if target == GO_STANDARD else GO_STANDARD
+
+
 def dry_target(native_model, effort):
     """Codex-dry tandem: frontier-tier steps -> GLM, everything else -> deepseek."""
-    if native_model == ASTRA:
-        return GO_FRONTIER, effort or "high"
-    return GO_STANDARD, effort or "medium"
+    target = GO_FRONTIER if native_model == ASTRA else GO_STANDARD
+    return target, tandem_effort(effort, native_model)
 
 
-def call_jev(key, state, timeout=4.0):
-    body = json.dumps({"model": MODEL, "state": state, "questions": QUESTIONS}).encode()
+def call_jev(key, state, questions=None, timeout=4.0):
+    body = json.dumps({"model": MODEL, "state": state,
+                       "questions": QUESTIONS if questions is None else questions}).encode()
     req = urllib.request.Request(
         API,
         data=body,
@@ -758,6 +796,7 @@ class Handler(BaseHTTPRequestHandler):
         status, out_kind, ctype, quota_hit = self._forward(
             payload, out_path, stream_requested, debug, marker, model)
         retried = False
+        fallback = None
         if quota_hit and not dry_reason:
             # Native usage is exhausted: flip to the Go tandem and retry this very
             # call so the turn does not fail (nothing reached the client yet).
@@ -773,6 +812,19 @@ class Handler(BaseHTTPRequestHandler):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
             dry_reason = "cleared"
+        if model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS:
+            # Half of the tandem refused this call, so try the sibling model
+            # before the turn is lost. The two Go models are metered against
+            # separate allowances, and a spent allowance arrives as the same
+            # 429/503 a transient outage does -- which is exactly what killed a
+            # live session on 18 September 2026 after the handoff.
+            fallback = other_tandem(model)
+            model, effort = fallback, tandem_effort(effort, native_model)
+            apply_route(payload, model, effort, None)
+            gate = f"codex_dry(fallback):{native_model}"
+            marker = route_marker(model, effort)
+            status, out_kind, ctype, _ = self._forward(
+                payload, out_path, stream_requested, debug, marker, model)
 
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -786,6 +838,7 @@ class Handler(BaseHTTPRequestHandler):
             "native": native_model,
             "dry": dry_reason,
             "retried": retried,
+            "fallback": fallback,
             "jev_ms": jev_ms,
             "total_ms": int((time.time() - t0) * 1000),
             "status": status,
