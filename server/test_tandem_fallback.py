@@ -1,0 +1,120 @@
+"""End-to-end check of the Codex-dry handoff, with the caller edge mocked.
+
+test_jev_server holds the rules; this holds the wiring. A tandem call that comes
+back retryable must be tried once on the sibling model, and when both refuse the
+caller must still receive the refusal instead of a request that is never
+answered -- the shape a live session hung on after the handoff on 18 September
+2026. The edge is mocked, so the test needs neither opencode Go nor an exhausted
+chat quota.
+"""
+import json
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import jev_server as jev
+
+COMPLETED = (
+    b'event: response.completed\n'
+    b'data: {"type":"response.completed","response":{"id":"resp_mock","output":[],"status":"completed"}}\n\n'
+)
+
+
+class Edge(BaseHTTPRequestHandler):
+    """Stands in for the router's local caller edge."""
+
+    attempts = []
+    refuse = ()
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        model = body.get("model")
+        type(self).attempts.append((model, (body.get("reasoning") or {}).get("effort")))
+        if model in type(self).refuse:
+            # The shape the edge answers an exhausted allowance with: a JSON error
+            # whose text matches the quota detector, and no content type that
+            # would make the relay treat it as a stream.
+            data = json.dumps({"error": {"message": "rate limit reached for this model"}}).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+        else:
+            data = COMPLETED
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class TandemHandoff(unittest.TestCase):
+    def setUp(self):
+        Edge.attempts = []
+        Edge.refuse = ()
+        self.edge = ThreadingHTTPServer(("127.0.0.1", 0), Edge)
+        threading.Thread(target=self.edge.serve_forever, daemon=True).start()
+        # Keep the decision local: no Jev call (so no API key), dry mode on.
+        self.saved = (jev.ROUTER, jev.caller_secret, jev.load_key, jev.native_dry)
+        jev.ROUTER = ("127.0.0.1", self.edge.server_address[1])
+        jev.caller_secret = lambda: "test-caller-secret"
+        jev.load_key = lambda: ""
+        jev.native_dry = lambda: "manual"
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), jev.Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        (jev.ROUTER, jev.caller_secret, jev.load_key, jev.native_dry) = self.saved
+        for server in (self.server, self.edge):
+            server.shutdown()
+            server.server_close()
+
+    def call(self):
+        payload = {
+            "model": "auto",
+            "stream": False,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "say OK"}],
+            }],
+        }
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.server.server_address[1]}/v1/responses",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            body = error.read()
+            error.close()
+            return error.code, body
+
+    def test_a_refused_tandem_call_is_retried_on_the_sibling(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        status, body = self.call()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            [model for model, _effort in Edge.attempts],
+            [jev.GO_FRONTIER, jev.GO_STANDARD],
+        )
+        # The depth survives the switch, and both attempts carry a rung the Go
+        # models declare.
+        self.assertEqual({effort for _model, effort in Edge.attempts}, {"high"})
+
+    def test_both_models_refusing_still_answers_the_caller(self):
+        Edge.refuse = (jev.GO_FRONTIER, jev.GO_STANDARD)
+        status, body = self.call()
+        self.assertEqual(status, 429)
+        self.assertIn(b"rate limit", body)
+        self.assertEqual(len(Edge.attempts), 2, "one try per tandem model, no loop")
+
+
+if __name__ == "__main__":
+    unittest.main()

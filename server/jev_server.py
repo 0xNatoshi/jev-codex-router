@@ -793,7 +793,7 @@ class Handler(BaseHTTPRequestHandler):
         apply_route(payload, model, effort, speed)
 
         out_path = path if path.startswith("/v1") else "/v1" + path
-        status, out_kind, ctype, quota_hit = self._forward(
+        status, out_kind, ctype, quota_hit, unwritten = self._forward(
             payload, out_path, stream_requested, debug, marker, model)
         retried = False
         fallback = None
@@ -806,7 +806,7 @@ class Handler(BaseHTTPRequestHandler):
             retried = True
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
-            status, out_kind, ctype, _ = self._forward(
+            status, out_kind, ctype, quota_hit, unwritten = self._forward(
                 payload, out_path, stream_requested, debug, marker, model)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
@@ -823,8 +823,18 @@ class Handler(BaseHTTPRequestHandler):
             apply_route(payload, model, effort, None)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
-            status, out_kind, ctype, _ = self._forward(
+            status, out_kind, ctype, quota_hit, unwritten = self._forward(
                 payload, out_path, stream_requested, debug, marker, model)
+        if unwritten is not None:
+            # Every model that could have served this turn refused it, and the
+            # refusal was held back only because another attempt might have
+            # followed. None did, so the caller gets the refusal instead of a
+            # request nobody ever answers.
+            self.send_response(status)
+            self.send_header("Content-Type", ctype or "application/json")
+            self.send_header("Content-Length", str(len(unwritten)))
+            self.end_headers()
+            self.wfile.write(unwritten)
 
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -857,10 +867,12 @@ class Handler(BaseHTTPRequestHandler):
     def _forward(self, payload, out_path, stream_requested, debug, marker, model):
         """One relay attempt to the local caller edge, streamed straight back.
 
-        Returns (status, out_kind, ctype, quota_hit). ``quota_hit`` is True only
-        for a >=400 response whose body looks like exhausted native usage; in
+        Returns (status, out_kind, ctype, quota_hit, unwritten). ``quota_hit`` is
+        True only for a >=400 response whose body looks like exhausted usage; in
         that case nothing has been written to the client yet, so the caller can
-        retry the same payload on another model.
+        retry the same payload on another model. ``unwritten`` carries that
+        response's body for the caller to relay if no retry follows, and is None
+        whenever the response already reached the client.
         """
         body = json.dumps(payload).encode("utf-8")
         conn = http.client.HTTPConnection(*ROUTER, timeout=900)
@@ -926,7 +938,9 @@ class Handler(BaseHTTPRequestHandler):
                 out_ctype = ctype or "application/json"
                 head = data[:64].lstrip()
                 if status >= 400 and (status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace"))):
-                    return status, out_kind, ctype, True
+                    # Held back, not written: the caller decides whether another
+                    # model gets this call first.
+                    return status, out_kind, ctype, True, data
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
                 # non-stream provider path) instead of forwarding raw SSE bytes.
