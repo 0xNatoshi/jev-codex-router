@@ -804,6 +804,10 @@ class Handler(BaseHTTPRequestHandler):
             model, effort = dry_target(native_model, effort)
             apply_route(payload, model, effort, None)
             retried = True
+            # The log records the state this call entered, not the one it started
+            # in: reading `dry: None` next to `codex_dry(retry)` is how a flip
+            # looks like it never happened when calibrating from the log.
+            dry_reason = "quota"
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
             status, out_kind, ctype, quota_hit, unwritten = self._forward(
