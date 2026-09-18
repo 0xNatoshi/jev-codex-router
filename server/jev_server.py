@@ -126,6 +126,13 @@ RETRYABLE_TANDEM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 DRY_MANUAL_PATH = os.path.join(STATE, "jev-router.codex-dry")
 DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
 DRY_COOLDOWN_S = 30 * 60
+# The edge announces when the exhausted window reopens, so an automatic flip
+# lasts until that instant (plus a small skew, so the re-probe cannot race the
+# reset itself) instead of a flat cooldown that keeps the tandem serving a
+# window which already came back. The horizon is the backstop: a bogus or
+# hostile announcement still cannot pin the router to the tandem for a week.
+DRY_RESET_SKEW_S = 5
+DRY_MAX_HORIZON_S = 7 * 24 * 3600
 QUOTA_RX = re.compile(
     r"(?i)(rate[ _-]?limit|out_of_usage|usage limit|hit your usage|insufficient_quota|quota)")
 
@@ -205,6 +212,48 @@ def _read_json(path):
         return None
 
 
+def _positive_seconds(value):
+    """A positive number of seconds, or None for anything unusable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def quota_reset_at(headers, body):
+    """When the exhausted usage window reopens, or None if it is not announced.
+
+    The local edge answers an exhausted quota with the reset instant in its
+    headers (`x-codex-primary-reset-at`, and its `-after-seconds` twin); the JSON
+    body repeats it as `resets_at` / `resets_in_seconds`. The relative header is
+    preferred because it needs no clock agreement. When nothing usable comes
+    back, the flip falls back to the bounded cooldown.
+    """
+    now = time.time()
+    after = _positive_seconds(headers.get("x-codex-primary-reset-after-seconds"))
+    if after:
+        return now + after
+    at = _positive_seconds(headers.get("x-codex-primary-reset-at"))
+    if at and at > now:
+        return at
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    fields = error if isinstance(error, dict) else payload
+    after = _positive_seconds(fields.get("resets_in_seconds"))
+    if after:
+        return now + after
+    at = _positive_seconds(fields.get("resets_at"))
+    return at if at and at > now else None
+
+
 def native_dry():
     """Reason native usage is considered exhausted, or None while it is fine.
 
@@ -220,7 +269,17 @@ def native_dry():
 
 
 def mark_native_dry(reason, resets_at=None):
-    until = resets_at if (resets_at and resets_at > time.time() + 60) else time.time() + DRY_COOLDOWN_S
+    """Flip to the Go tandem, for as long as the exhausted window stays shut.
+
+    `resets_at` is the instant the edge said the window reopens. Ending the
+    state just after it is what sends the next call back to the native triptych
+    as soon as the quota returns; without that announcement the flip keeps the
+    bounded cooldown instead.
+    """
+    now = time.time()
+    until = now + DRY_COOLDOWN_S
+    if resets_at and resets_at > now:
+        until = min(resets_at + DRY_RESET_SKEW_S, now + DRY_MAX_HORIZON_S)
     try:
         tmp = DRY_STATE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -913,14 +972,16 @@ class Handler(BaseHTTPRequestHandler):
         apply_route(payload, model, effort, speed)
 
         out_path = path if path.startswith("/v1") else "/v1" + path
-        status, out_kind, ctype, quota_hit, unwritten = self._forward(
+        status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
             payload, out_path, stream_requested, debug, marker, model)
         retried = False
         fallback = None
         if quota_hit and not dry_reason:
             # Native usage is exhausted: flip to the Go tandem and retry this very
-            # call so the turn does not fail (nothing reached the client yet).
-            mark_native_dry("quota")
+            # call so the turn does not fail (nothing reached the client yet). The
+            # flip lasts until the edge says the window reopens, so the first call
+            # after the reset is served by the native triptych again.
+            mark_native_dry("quota", resets_at=resets_at)
             model, effort = dry_target(native_model, effort)
             apply_route(payload, model, effort, None)
             retried = True
@@ -930,7 +991,7 @@ class Handler(BaseHTTPRequestHandler):
             dry_reason = "quota"
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
-            status, out_kind, ctype, quota_hit, unwritten = self._forward(
+            status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
                 payload, out_path, stream_requested, debug, marker, model)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
@@ -947,7 +1008,7 @@ class Handler(BaseHTTPRequestHandler):
             apply_route(payload, model, effort, None)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
-            status, out_kind, ctype, quota_hit, unwritten = self._forward(
+            status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
                 payload, out_path, stream_requested, debug, marker, model)
         if unwritten is not None:
             # Every model that could have served this turn refused it, and the
@@ -991,12 +1052,14 @@ class Handler(BaseHTTPRequestHandler):
     def _forward(self, payload, out_path, stream_requested, debug, marker, model):
         """One relay attempt to the local caller edge, streamed straight back.
 
-        Returns (status, out_kind, ctype, quota_hit, unwritten). ``quota_hit`` is
-        True only for a >=400 response whose body looks like exhausted usage; in
-        that case nothing has been written to the client yet, so the caller can
-        retry the same payload on another model. ``unwritten`` carries that
-        response's body for the caller to relay if no retry follows, and is None
-        whenever the response already reached the client.
+        Returns (status, out_kind, ctype, quota_hit, unwritten, resets_at).
+        ``quota_hit`` is True only for a >=400 response whose body looks like
+        exhausted usage; in that case nothing has been written to the client
+        yet, so the caller can retry the same payload on another model.
+        ``unwritten`` carries that response's body for the caller to relay if no
+        retry follows, and is None whenever the response already reached the
+        client. ``resets_at`` is the instant that refusal said the window
+        reopens, when it announced one.
         """
         body = json.dumps(payload).encode("utf-8")
         conn = http.client.HTTPConnection(*ROUTER, timeout=900)
@@ -1063,8 +1126,9 @@ class Handler(BaseHTTPRequestHandler):
                 head = data[:64].lstrip()
                 if status >= 400 and (status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace"))):
                     # Held back, not written: the caller decides whether another
-                    # model gets this call first.
-                    return status, out_kind, ctype, True, data
+                    # model gets this call first. The refusal also carries the
+                    # instant the window reopens, which is how long the flip lasts.
+                    return status, out_kind, ctype, True, data, quota_reset_at(resp.headers, data)
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
                 # non-stream provider path) instead of forwarding raw SSE bytes.
@@ -1078,7 +1142,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
-            return status, out_kind, ctype, False, None
+            return status, out_kind, ctype, False, None, None
         finally:
             conn.close()
 

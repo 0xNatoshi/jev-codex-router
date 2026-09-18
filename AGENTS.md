@@ -168,9 +168,11 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   `opencode-go/glm-5.3-flash`, every other tier to
   `opencode-go/deepseek-v4.1-flash`; remove the file to return to the
   luna/sol/astra triptych. An automatic flip (429 / usage-limit response) also
-  retries the failed call on the tandem, expires after 30 minutes
-  (`jev-router.codex-dry.json`) and is cleared by the next successful native
-  call. Log fields to watch: `dry`, `native`, `retried`.
+  retries the failed call on the tandem, then lasts until the instant the edge
+  announced for the window reset (30 minutes when the refusal announces none,
+  one week at most) — `cat ~/.codex/codex-router/jev-router.codex-dry.json`
+  reads the reason and `until_iso` — and is cleared by the next successful
+  native call. Log fields to watch: `dry`, `native`, `retried`.
 - **Thread display**: streamed reasoning summaries get the routed tag appended
   in place ( · 🧠sol:low · , separators on both sides so the next summary part
   never glues to the tag; one glyph per route — ⚡luna, 🧠sol, 🚀astra,

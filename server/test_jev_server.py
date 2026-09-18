@@ -7,7 +7,11 @@ worth one attempt on the sibling model, and the confidence gate that keeps the
 triptych from over-spending.
 """
 import json
+import os
+import tempfile
+import time
 import unittest
+from unittest import mock
 
 import jev_server as jev
 
@@ -63,6 +67,76 @@ class ResponseIdContinuity(unittest.TestCase):
         )
         stream = self.relay(completed)
         self.assertEqual(self.response_ids(stream), ["resp_alone"])
+
+
+class QuotaReset(unittest.TestCase):
+    """A flip lasts as long as the window stays shut, and not longer.
+
+    The edge announces the reopening instant on an exhausted quota; the auto
+    state follows it, so the first call after the reset is served by the native
+    triptych again instead of waiting out a flat cooldown on a window that
+    already came back.
+    """
+
+    def test_the_relative_header_wins_over_a_skewed_clock(self):
+        now = time.time()
+        at = jev.quota_reset_at(
+            {
+                "x-codex-primary-reset-after-seconds": "600",
+                "x-codex-primary-reset-at": str(int(now) - 5),
+            },
+            b"",
+        )
+        self.assertAlmostEqual(at, now + 600, delta=5)
+
+    def test_the_absolute_header_is_used_when_it_stands_alone(self):
+        now = time.time()
+        at = jev.quota_reset_at({"x-codex-primary-reset-at": str(int(now) + 900)}, b"")
+        self.assertAlmostEqual(at, now + 900, delta=5)
+
+    def test_the_body_announcement_is_a_fallback(self):
+        now = time.time()
+        body = json.dumps(
+            {"error": {"type": "usage_limit_reached", "resets_in_seconds": 120}}
+        ).encode()
+        self.assertAlmostEqual(jev.quota_reset_at({}, body), now + 120, delta=5)
+
+    def test_an_unusable_announcement_is_no_announcement(self):
+        now = time.time()
+        for headers, body in (
+            ({}, b""),
+            ({"x-codex-primary-reset-at": "soon"}, b""),
+            ({"x-codex-primary-reset-after-seconds": "0"}, b""),
+            ({"x-codex-primary-reset-at": str(int(now) - 60)}, b""),
+            ({}, b"not json"),
+            ({}, json.dumps({"error": {"message": "rate limit"}}).encode()),
+        ):
+            self.assertIsNone(jev.quota_reset_at(headers, body), (headers, body))
+
+    def test_the_state_ends_just_after_the_announced_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "dry.json")
+            with mock.patch.object(jev, "DRY_STATE_PATH", state), mock.patch.object(
+                jev, "DRY_MANUAL_PATH", os.path.join(tmp, "flag")
+            ):
+                resets_at = time.time() + 3600
+                jev.mark_native_dry("quota", resets_at=resets_at)
+                with open(state, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                self.assertAlmostEqual(saved["until"], resets_at + jev.DRY_RESET_SKEW_S, delta=1)
+                self.assertEqual(jev.native_dry(), "quota")
+
+                # A bogus far-future instant cannot pin the tandem for a week.
+                jev.mark_native_dry("quota", resets_at=time.time() + 30 * 24 * 3600)
+                with open(state, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                self.assertLessEqual(saved["until"], time.time() + jev.DRY_MAX_HORIZON_S + 1)
+
+                # Nothing announced: the bounded cooldown still applies.
+                jev.mark_native_dry("quota")
+                with open(state, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                self.assertAlmostEqual(saved["until"], time.time() + jev.DRY_COOLDOWN_S, delta=5)
 
 
 class DryTandem(unittest.TestCase):

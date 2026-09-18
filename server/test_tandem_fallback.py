@@ -8,7 +8,10 @@ answered -- the shape a live session hung on after the handoff on 18 September
 chat quota.
 """
 import json
+import os
+import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -39,6 +42,7 @@ class Edge(BaseHTTPRequestHandler):
     attempts = []
     refuse = ()
     body = COMPLETED
+    reset_at = 0
 
     def log_message(self, *args):
         pass
@@ -55,6 +59,8 @@ class Edge(BaseHTTPRequestHandler):
             data = json.dumps({"error": {"message": "rate limit reached for this model"}}).encode()
             self.send_response(429)
             self.send_header("Content-Type", "application/json")
+            if type(self).reset_at:
+                self.send_header("x-codex-primary-reset-at", str(int(type(self).reset_at)))
         else:
             data = type(self).body
             self.send_response(200)
@@ -69,6 +75,7 @@ class TandemHandoff(unittest.TestCase):
         Edge.attempts = []
         Edge.refuse = ()
         Edge.body = COMPLETED
+        Edge.reset_at = 0
         self.edge = ThreadingHTTPServer(("127.0.0.1", 0), Edge)
         threading.Thread(target=self.edge.serve_forever, daemon=True).start()
         # Keep the decision local: no Jev call (so no API key), dry mode on.
@@ -145,6 +152,32 @@ class TandemHandoff(unittest.TestCase):
                 ids.append(response["id"])
         self.assertEqual(ids, ["resp_created", "resp_created"])
         self.assertIn(b"data: [DONE]", body)
+
+    def test_a_quota_flip_lasts_until_the_edge_says_the_window_reopens(self):
+        # The first attempt is a native tier (no Jev key in this harness), the
+        # edge refuses it with the reset instant, and the flip must record that
+        # instant: the next call after the quota returns goes back to the
+        # triptych instead of serving the tandem on a window that already
+        # reopened.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "dry.json")
+            saved = (jev.native_dry, jev.DRY_STATE_PATH, jev.DRY_MANUAL_PATH)
+            jev.native_dry = lambda: None
+            jev.DRY_STATE_PATH = state
+            jev.DRY_MANUAL_PATH = os.path.join(tmp, "flag")
+            try:
+                Edge.refuse = (jev.ASTRA,)
+                Edge.reset_at = time.time() + 1800
+                status, body = self.call()
+                self.assertEqual(status, 200, body)
+                self.assertEqual([model for model, _ in Edge.attempts], [jev.ASTRA, jev.GO_FRONTIER])
+                with open(state, encoding="utf-8") as fh:
+                    flipped = json.load(fh)
+                self.assertAlmostEqual(
+                    flipped["until"], Edge.reset_at + jev.DRY_RESET_SKEW_S, delta=2
+                )
+            finally:
+                jev.native_dry, jev.DRY_STATE_PATH, jev.DRY_MANUAL_PATH = saved
 
 
 if __name__ == "__main__":

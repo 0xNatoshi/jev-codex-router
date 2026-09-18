@@ -78,8 +78,12 @@ which also retries the failed call on the tandem). While dry:
 | `gpt-6-astra` (frontier) | `opencode-go/glm-5.3-flash` |
 | `gpt-5.6-sol` / `gpt-5.6-luna` | `opencode-go/deepseek-v4.1-flash` |
 
-An automatic flip expires after 30 minutes (re-probe) and is cleared by the
-first successful native call; the manual sentinel file is never auto-cleared.
+An automatic flip lasts until the instant the edge announced for the window
+reset, so the first call after the quota returns is served by the triptych
+again; when a refusal announces no instant it falls back to a 30-minute
+re-probe, and a week is the ceiling on anything a refusal claims. It is cleared
+by the first successful native call, and the manual sentinel file is never
+auto-cleared.
 
 Two details keep the substitute transparent. The decided depth travels with the
 call, mapped onto the Go ladder — `low` stays `low`, `medium` and `high` become
