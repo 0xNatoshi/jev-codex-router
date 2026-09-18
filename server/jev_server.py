@@ -82,6 +82,16 @@ VERSION = "1.0"
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
 
+# Generic ask surface (POST /ask): a thin typed pass-through to System One for
+# callers that own their question set — the in-app browser chooser is the first
+# one. No routing policy, no logging of the caller's state.
+ASK_PATHS = ("/ask", "/v1/ask")
+ASK_MAX_BYTES = 256 * 1024
+ASK_MAX_STATE_CHARS = 120_000
+ASK_MAX_QUESTIONS = 40
+ASK_TIMEOUT = 15.0
+ASK_TYPES = ("noul", "choice", "score")
+
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TIERS = (LUNA, SOL, ASTRA)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
@@ -255,6 +265,47 @@ def call_jev(key, state, questions=None, timeout=4.0):
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def validate_ask(body):
+    """Check a POST /ask body. Returns (state, questions, error) — error is None when valid.
+
+    Bounds are the whole point: the endpoint spends TypeSafe credits on loopback,
+    so it accepts only a JSON-serialisable state under the size cap and a small
+    set of well-formed typed questions.
+    """
+    if not isinstance(body, dict):
+        return None, None, "json object expected"
+    state = body.get("state")
+    if not isinstance(state, (str, dict, list)):
+        return None, None, "state must be a string, object or array"
+    try:
+        size = len(json.dumps(state, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return None, None, "state is not JSON-serialisable"
+    if size > ASK_MAX_STATE_CHARS:
+        return None, None, f"state too large ({size} > {ASK_MAX_STATE_CHARS} chars)"
+    questions = body.get("questions")
+    if not isinstance(questions, dict) or not questions:
+        return None, None, "questions must be a non-empty object"
+    if len(questions) > ASK_MAX_QUESTIONS:
+        return None, None, f"too many questions ({len(questions)} > {ASK_MAX_QUESTIONS})"
+    for name, question in questions.items():
+        if not isinstance(name, str) or not name:
+            return None, None, "question names must be non-empty strings"
+        if not isinstance(question, dict):
+            return None, None, f"question {name} must be an object"
+        qtype = question.get("type")
+        if qtype not in ASK_TYPES:
+            return None, None, f"question {name} has unsupported type {qtype!r}"
+        if not isinstance(question.get("instructions"), (str, dict, list)):
+            return None, None, f"question {name} needs instructions"
+        criteria = question.get("criteria")
+        if qtype == "choice" and (not isinstance(criteria, dict) or not criteria):
+            return None, None, f"question {name} needs a non-empty criteria map"
+        if qtype == "score" and not isinstance(criteria, list):
+            return None, None, f"question {name} needs a criteria list"
+    return state, questions, None
 
 
 def clamp_effort(depth):
@@ -666,6 +717,41 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _ask(self):
+        """Typed pass-through to System One for local callers (:4319, loopback only).
+
+        No policy, no logging of the caller's state: the body is validated,
+        forwarded as-is and only the typed answers come back.
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > ASK_MAX_BYTES:
+            # Do not drain an oversized body: answer and close so a wrong or
+            # hostile Content-Length cannot make the server buffer it.
+            self.close_connection = True
+            return self._json(413, {"error": {"message": f"body too large ({length} bytes)"}})
+        raw = self.rfile.read(length) if length else b""
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return self._json(400, {"error": {"message": "invalid json"}})
+        state, questions, error = validate_ask(body)
+        if error:
+            return self._json(400, {"error": {"message": error}})
+        key = load_key()
+        if not key:
+            return self._json(503, {"error": {"message": "TYPESAFE_API_KEY is not configured"}})
+        t0 = time.time()
+        try:
+            answer = call_jev(key, state, questions, timeout=ASK_TIMEOUT)
+        except Exception as exc:
+            return self._json(502, {"error": {"message": f"jev: {exc}"[:300]}})
+        return self._json(200, {
+            "model": answer.get("model"),
+            "answers": answer.get("answers") or {},
+            "usage": answer.get("usage") or {},
+            "ms": int((time.time() - t0) * 1000),
+        })
+
     def do_GET(self):
         path = self.path.split("?", 1)[0].rstrip("/")
         if path in ("/v1/models", "/models"):
@@ -697,6 +783,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post(self):
         path = self.path.split("?", 1)[0]
+        if path.rstrip("/") in ASK_PATHS:
+            return self._ask()
         if "/responses" not in path:
             return self._json(404, {"error": {"message": f"unsupported path {path}"}})
 
@@ -958,7 +1046,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
-            return status, out_kind, ctype, False
+            return status, out_kind, ctype, False, None
         finally:
             conn.close()
 

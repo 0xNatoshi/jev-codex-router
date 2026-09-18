@@ -91,6 +91,26 @@ models against separate allowances and reports a spent one the same way it
 reports a transient outage. If both refuse, the caller receives that refusal
 rather than a request nobody answers.
 
+## Ask surface (`POST /ask`)
+
+The server also answers typed questions directly, for local callers that bring
+their own question set. The `jev-browser-choice` skill is the first one: it
+turns an in-app-browser accessibility dump into one Jev `choice` question and
+acts only on the validated element index, so the page never enters the model's
+context.
+
+```sh
+curl -s http://127.0.0.1:4319/ask -X POST -H 'Content-Type: application/json' \
+  -d '{"state":{"goal":"open the docs"},"questions":{"next":{"type":"choice","instructions":"Which element advances the goal?","criteria":{"e5":"link Documentation"}}}}'
+# → {"model":"jev-1.13.0","answers":{"next":{...}},"usage":{...},"ms":612}
+```
+
+Validation is the whole contract: a JSON-serialisable `state` under 120k chars,
+at most 40 questions, each a `noul`, `choice` or `score` with its instructions
+and criteria. The caller's state is never logged. `502` surfaces an upstream Jev
+failure — `402` means the TypeSafe account is out of credits — and `503` means
+no key is configured.
+
 ## Repository layout
 
 ```

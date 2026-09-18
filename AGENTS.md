@@ -157,6 +157,10 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 - **Decision log**: `~/.codex/codex-router/jev-router-live.jsonl` — one line per
   routed turn.
+- **Ask surface**: `POST /ask` (also `/v1/ask`) — typed pass-through to System
+  One for local callers with their own question set (state ≤ 120k chars, ≤ 40
+  questions, caller state never logged). `502 jev: HTTP Error 402` means the
+  TypeSafe account is out of credits; `503` means no key was found.
 - **Kill switch** (instant, no restart): `touch ~/.codex/codex-router/jev-router.off`
   → the server relays to astra without calling Jev. Remove the file to re-enable.
 - **Codex-dry tandem** (only while native usage is exhausted):
@@ -193,6 +197,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 | HTTP 502 `provider_api_proxy_error` on jev-auto | server-side error | check the `status`/`out` fields in `jev-router-live.jsonl`, and the server's stderr log |
 | "Jev Codex Router" absent from the picker | not published/visible, or Codex not restarted | `refresh-catalog`, `control picker set jev/auto show`, full Codex restart |
 | Native 429 / "usage limit" while routing | ChatGPT usage window exhausted | expected: the Codex-dry tandem takes over (`jev-router.codex-dry.json`); delete the manual file to re-probe sooner |
+| Jev calls fail with `402 Payment Required` (`gate=codex_dry(fallback)`, `tier` null in the log) | the TypeSafe account is out of credits | expected: the router keeps serving through the tandem; add credits at console.typesafe.ai to restore classification |
 | `Unknown API gateway model: jev-auto` | catalog not republished | `./bin/codex-router refresh-catalog` |
 | Jev returns HTTP 422 | request body missing `"model"` | always send `"model": "jev-latest"` to the System One API |
 | Native calls fail after a few days | shared session expired | re-run `chatgpt-session enable` |
