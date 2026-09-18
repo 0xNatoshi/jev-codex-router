@@ -21,12 +21,24 @@ COMPLETED = (
     b'data: {"type":"response.completed","response":{"id":"resp_mock","output":[],"status":"completed"}}\n\n'
 )
 
+# What the caller edge answers a relayed turn with: the stream opened on one id,
+# and the terminal event repeats it under a fresh encoding. The Responses
+# transform in front of the router refuses that pair, so the relay has to hand it
+# one id or the whole turn arrives as an error.
+MISMATCHED = (
+    b'data: {"type":"response.created","response":{"id":"resp_created"}}\n\n'
+    b'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+    b'data: {"type":"response.completed","response":{"id":"resp_re-encoded","output":[]}}\n\n'
+    b'data: [DONE]\n\n'
+)
+
 
 class Edge(BaseHTTPRequestHandler):
     """Stands in for the router's local caller edge."""
 
     attempts = []
     refuse = ()
+    body = COMPLETED
 
     def log_message(self, *args):
         pass
@@ -44,7 +56,7 @@ class Edge(BaseHTTPRequestHandler):
             self.send_response(429)
             self.send_header("Content-Type", "application/json")
         else:
-            data = COMPLETED
+            data = type(self).body
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(data)))
@@ -56,6 +68,7 @@ class TandemHandoff(unittest.TestCase):
     def setUp(self):
         Edge.attempts = []
         Edge.refuse = ()
+        Edge.body = COMPLETED
         self.edge = ThreadingHTTPServer(("127.0.0.1", 0), Edge)
         threading.Thread(target=self.edge.serve_forever, daemon=True).start()
         # Keep the decision local: no Jev call (so no API key), dry mode on.
@@ -73,10 +86,10 @@ class TandemHandoff(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def call(self):
+    def call(self, stream=False):
         payload = {
             "model": "auto",
-            "stream": False,
+            "stream": stream,
             "input": [{
                 "type": "message",
                 "role": "user",
@@ -114,6 +127,24 @@ class TandemHandoff(unittest.TestCase):
         self.assertEqual(status, 429)
         self.assertIn(b"rate limit", body)
         self.assertEqual(len(Edge.attempts), 2, "one try per tandem model, no loop")
+
+    def test_a_relayed_stream_repeats_the_id_it_opened_on(self):
+        # The edge re-encodes the id of the terminal event. Handing the caller
+        # that pair is what the Responses transform in front of the router turns
+        # into an `invalid_responses_stream` error, so the relay keeps the id the
+        # stream opened on.
+        Edge.body = MISMATCHED
+        status, body = self.call(stream=True)
+        self.assertEqual(status, 200, body)
+        ids = []
+        for line in body.decode().splitlines():
+            if not line.startswith("data: ") or line[6:].strip() == "[DONE]":
+                continue
+            response = json.loads(line[6:]).get("response")
+            if isinstance(response, dict) and "id" in response:
+                ids.append(response["id"])
+        self.assertEqual(ids, ["resp_created", "resp_created"])
+        self.assertIn(b"data: [DONE]", body)
 
 
 if __name__ == "__main__":

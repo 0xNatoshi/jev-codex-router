@@ -34,6 +34,10 @@ Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
 (jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
 Display: streamed reasoning summaries get the routed tag appended in place
 ( · 🧠sol:low · ) so the Codex thread shows the picked model per call.
+The same rewriter keeps one response id across a relayed stream: a tandem stream
+has already crossed the local edge once, so its terminal event carries a
+re-encrypted id, and the Responses consumer in front of us refuses a completion
+whose id differs from the one `response.created` announced.
 Non-stream callers (auto-compaction checkpoints, litellm non-stream path)
 receive the SSE stream reassembled into a single JSON response object.
 Balance: quality-first. sol is the default workhorse, astra is reserved for
@@ -124,6 +128,10 @@ DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
 DRY_COOLDOWN_S = 30 * 60
 QUOTA_RX = re.compile(
     r"(?i)(rate[ _-]?limit|out_of_usage|usage limit|hit your usage|insufficient_quota|quota)")
+
+# The events that close a Responses stream and repeat the response id it opened
+# with. A relayed (tandem) stream is rewritten onto that opening id.
+TERMINAL_EVENT_TYPES = ("response.completed", "response.incomplete", "response.failed")
 
 ERROR_RX = re.compile(
     r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
@@ -498,6 +506,14 @@ class SummaryMarker:
     The last delta of each summary part is held back by one event so the tag can
     be appended in place to it and to the matching done events: no fabricated
     events, no sequence-number surgery, byte-exact pass-through everywhere else.
+
+    The same pass keeps a relayed stream's response id consistent. A Codex-dry
+    call crosses the local edge, which encrypts response ids, so the terminal
+    event of the stream we receive carries a freshly encoded id; the Responses
+    transform in front of the router reads that as a completion that renamed
+    itself and replaces the whole turn with an error event. The id announced by
+    `response.created` is the one that travels, so a terminal event is rewritten
+    onto it before the block leaves.
     Only active for streamed responses.
     """
 
@@ -507,6 +523,7 @@ class SummaryMarker:
         self._buf = ""
         self._block = []
         self._held = None  # (key, block_lines)
+        self._response_id = None  # the id this stream's completion must repeat
 
     @staticmethod
     def _emit(lines):
@@ -587,6 +604,10 @@ class SummaryMarker:
             out.append(self._emit(block))
             return out
         dtype = data.get("type")
+        if dtype == "response.created":
+            response = data.get("response")
+            if isinstance(response, dict) and isinstance(response.get("id"), str):
+                self._response_id = response["id"]
         if dtype == "response.reasoning_summary_text.delta":
             if self._held is not None:
                 out.append(self._emit(self._held[1]))
@@ -624,7 +645,18 @@ class SummaryMarker:
                     self._held = None
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
-        if dtype == "response.completed":
+        if dtype in TERMINAL_EVENT_TYPES:
+            response = data.get("response")
+            if (
+                self._response_id
+                and isinstance(response, dict)
+                and response.get("id") != self._response_id
+            ):
+                # Two encodings of one response id, not two responses: the
+                # consumer in front of us only accepts a completion that repeats
+                # the id it already saw.
+                response["id"] = self._response_id
+                block = self._rebuild(block, data)
             out.append(self._emit(self._tag_item_block(block)))
             return out
         if self._held is not None:

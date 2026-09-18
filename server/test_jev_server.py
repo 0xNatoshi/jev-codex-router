@@ -6,9 +6,63 @@ that model's ladder the decided depth lands on, whether a failed tandem call is
 worth one attempt on the sibling model, and the confidence gate that keeps the
 triptych from over-spending.
 """
+import json
 import unittest
 
 import jev_server as jev
+
+
+class ResponseIdContinuity(unittest.TestCase):
+    """One response id per relayed stream, however many gateways touched it.
+
+    A Codex-dry turn is relayed through the local edge, which encodes response
+    ids, so the terminal event of the stream we receive repeats the id under a
+    fresh encoding. The Responses transform in front of the router read that as a
+    completion that renamed itself and replaced the turn with an
+    `invalid_responses_stream` error -- the shape that ended a live tandem turn
+    on 18 September 2026.
+    """
+
+    CREATED = b'data: {"type":"response.created","response":{"id":"resp_created"}}\n\n'
+    DONE = b"data: [DONE]\n\n"
+
+    def relay(self, *frames):
+        markerer = jev.SummaryMarker(" \u00b7 \U0001f9e0sol:low \u00b7 ")
+        return "".join(markerer.feed(frame) for frame in frames) + markerer.flush()
+
+    def response_ids(self, stream):
+        ids = []
+        for line in stream.splitlines():
+            if not line.startswith("data: ") or line[6:].strip() == "[DONE]":
+                continue
+            event = json.loads(line[6:])
+            response = event.get("response")
+            if isinstance(response, dict) and "id" in response:
+                ids.append(response["id"])
+        return ids
+
+    def test_a_re_encoded_completion_keeps_the_announced_id(self):
+        completed = (
+            b'data: {"type":"response.completed","response":{"id":"resp_re-encoded","output":[]}}\n\n'
+        )
+        stream = self.relay(self.CREATED, completed, self.DONE)
+        self.assertEqual(self.response_ids(stream), ["resp_created", "resp_created"])
+        self.assertIn("data: [DONE]", stream)
+
+    def test_every_terminal_event_is_rewritten_onto_the_announced_id(self):
+        for terminal in ("response.completed", "response.incomplete", "response.failed"):
+            frame = (
+                'data: {"type":"%s","response":{"id":"resp_other","output":[]}}\n\n' % terminal
+            ).encode()
+            stream = self.relay(self.CREATED, frame)
+            self.assertEqual(self.response_ids(stream), ["resp_created", "resp_created"], terminal)
+
+    def test_a_stream_without_a_created_event_is_left_to_its_own_id(self):
+        completed = (
+            b'data: {"type":"response.completed","response":{"id":"resp_alone","output":[]}}\n\n'
+        )
+        stream = self.relay(completed)
+        self.assertEqual(self.response_ids(stream), ["resp_alone"])
 
 
 class DryTandem(unittest.TestCase):

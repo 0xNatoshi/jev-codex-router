@@ -91,6 +91,14 @@ models against separate allowances and reports a spent one the same way it
 reports a transient outage. If both refuse, the caller receives that refusal
 rather than a request nobody answers.
 
+A third detail keeps the relay legal for the Responses consumer in front of it.
+A dry turn crosses the local edge, which encodes response ids, so the terminal
+event of the stream the relay receives repeats the id under a fresh encoding.
+Read as-is, that is a completion that renamed its own response, and the consumer
+replaces the finished turn with an `invalid_responses_stream` error; the relay
+therefore rewrites the terminal id onto the one `response.created` announced.
+Native turns are untouched — their ids already match.
+
 ## Ask surface (`POST /ask`)
 
 The server also answers typed questions directly, for local callers that bring
