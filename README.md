@@ -41,7 +41,10 @@ Codex ──▶ Codex Router (:4202)
   file, or an observed 429 / usage-limit response), the triptych is replaced:
   GLM (`opencode-go/glm-5.3-flash`) for frontier-tier steps, deepseek
   (`opencode-go/deepseek-v4.1-flash`) for everything else. The failed call is
-  retried on the tandem; the next successful native call clears an auto flip.
+  retried on the tandem, at the thinking depth Jev decided, mapped onto the Go
+  models' own ladder; a tandem call that comes back retryable is tried once on
+  the sibling model before the turn is lost. The next successful native call
+  clears an auto flip.
 - **Decision log** — every routed turn is logged locally for calibration
   (`~/.codex/codex-router/jev-router-live.jsonl`), never published.
 
@@ -77,6 +80,16 @@ which also retries the failed call on the tandem). While dry:
 
 An automatic flip expires after 30 minutes (re-probe) and is cleared by the
 first successful native call; the manual sentinel file is never auto-cleared.
+
+Two details keep the substitute transparent. The decided depth travels with the
+call, mapped onto the Go ladder — `low` stays `low`, `medium` and `high` become
+`high`, `xhigh` or above become `max` — because those models declare three rungs
+where the triptych exposes five, and the API forwarder clamps the value once more
+onto the route's own ladder. And a tandem call that comes back retryable
+(429/5xx) is tried once on the sibling model: opencode Go meters the two Go
+models against separate allowances and reports a spent one the same way it
+reports a transient outage. If both refuse, the caller receives that refusal
+rather than a request nobody answers.
 
 ## Repository layout
 
