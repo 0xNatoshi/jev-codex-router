@@ -19,6 +19,14 @@ poc = importlib.util.module_from_spec(_spec)
 sys.modules["poc"] = poc
 _spec.loader.exec_module(poc)
 
+# The task text and the continuity bound come from the router itself, so the
+# shadow log records what production sends instead of a second opinion about it.
+_jspec = importlib.util.spec_from_file_location(
+    "jev_server", os.path.join(HERE, "..", "server", "jev_server.py"))
+jev = importlib.util.module_from_spec(_jspec)
+sys.modules["jev_server"] = jev
+_jspec.loader.exec_module(jev)
+
 SESS_ROOT = os.path.expanduser("~/.codex/sessions")
 DEFAULT_LOG = os.path.join(HERE, "..", "shadow-log.jsonl")
 TAG_CLEAN = re.compile(r"<[^>]+>")
@@ -76,7 +84,10 @@ def extract_user_turns(path, cap=6):
                 text = re.sub(r"\s+", " ", TAG_CLEAN.sub(" ", _message_text(p))).strip()
                 if len(text) < 12 or text.startswith("## "):
                     continue
-                out.append({"text": text, "cwd": cwd, "prev": prev})
+                ask = jev.task_for_jev(text)
+                if not ask:
+                    continue  # envelopes only: there is no request in this turn
+                out.append({"text": text, "ask": ask, "cwd": cwd, "prev": prev})
     except Exception as e:
         print(f"  !! {os.path.basename(path)}: {e!r}", file=sys.stderr)
     return out
@@ -91,7 +102,7 @@ def build_state(turn):
         "has_files": bool(re.search(r"# Files (mentioned|pasted) by the user", text)),
         "short_followup": len(text) < 60,
     }
-    state = {"task": text[:500], "signals": signals}
+    state = {"task": turn["ask"], "signals": signals}
     if turn.get("prev"):
         state["previous_assistant"] = turn["prev"]
     return state
@@ -150,7 +161,7 @@ def main():
     tasks, skipped = [], 0
     for path in files:
         for turn in extract_user_turns(path):
-            k = turn["text"][:80].lower()
+            k = turn["ask"][:80].lower()
             if k in seen:
                 skipped += 1
                 continue
@@ -161,7 +172,7 @@ def main():
         print(f"recent sessions ({args.days} d): {len(files)} | new turns: {len(tasks)} (skipped {skipped})")
     if args.dry:
         for p, t in tasks[:12]:
-            print(f"- [{os.path.basename(p)[:34]}] {t['text'][:95]}")
+            print(f"- [{os.path.basename(p)[:34]}] {t['ask'][:95]}")
         return 0
 
     key = poc.load_key()
@@ -188,7 +199,7 @@ def main():
                     holds += 1
                 n_tok += (resp.get("usage", {}) or {}).get("input_tokens", 0) or 0
                 rec = {"at": ts, "state_v": 2, "session": os.path.basename(path),
-                       "task": turn["text"][:140], "project": state["signals"].get("project"),
+                       "task": turn["ask"][:140], "project": state["signals"].get("project"),
                        "tier": tier["choice"], "tier_conf": round(tier["confidence"], 3),
                        "depth": d, "gate": gate,
                        "route": {"model": model, "effort": effort, "speed": speed},
@@ -197,7 +208,7 @@ def main():
                 logf.flush()
                 dist[model] = dist.get(model, 0) + 1
                 if not args.quiet:
-                    print(f"#{i:>2}  {tier['choice']:<14} conf={tier['confidence']:.2f} [{gate}] depth={d:<7} -> @{effort} [{speed}]  |  {turn['text'][:52]}…")
+                    print(f"#{i:>2}  {tier['choice']:<14} conf={tier['confidence']:.2f} [{gate}] depth={d:<7} -> @{effort} [{speed}]  |  {turn['ask'][:52]}…")
             except Exception as e:
                 errors += 1
                 if not args.quiet:
