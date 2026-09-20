@@ -1,12 +1,4 @@
-"""Tests for the answer signature: the route the app actually renders.
-
-The app collapses a turn's activity (thinking, commentary, tool calls) behind
-its worked-for divider, so the tag written into the reasoning summaries stays
-invisible until that divider is expanded. These tests hold the second pass --
-the one that signs the visible answer: only the item Codex marks
-`final_answer` is signed, it is added once per representation, and the history
-replayed upstream never carries it.
-"""
+"""The served model/effort heads every assistant message and never re-enters input."""
 import json
 import unittest
 from unittest import mock
@@ -14,155 +6,143 @@ from unittest import mock
 import jev_server as jev
 
 
-class AnswerSignature(unittest.TestCase):
-    """The route written where the app renders it without a click: the answer.
-
-    The app collapses a turn's activity (thinking, commentary, tool calls)
-    behind its worked-for divider, so a tag inside the thinking block stays
-    invisible. These tests hold the answering pass: only the item Codex marks
-    `final_answer` gains the tag, it is added once per representation, and the
-    history replayed upstream never carries it.
-    """
-
-    SIG = "\n\n— 🧠 sol · low"
-    LINE = "— 🧠 sol · low"  # the signature as it reads inside a JSON frame
+class AnswerHeader(unittest.TestCase):
+    HEADER = "**🧠 sol · thinking: low**\n\n"
     TAG = " · 🧠 sol:low · "
-    ANSWER_ID = "msg_answer"
-    NOTE_ID = "msg_note"
+    LEGACY = "\n\n— 🧠 sol · low"
 
-    def frame(self, event):
-        return ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8")
+    @staticmethod
+    def frame(event):
+        return ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode()
 
-    def relay(self, *frames, signature=None):
-        markerer = jev.SummaryMarker(self.TAG, self.SIG if signature is None else signature)
-        return "".join(markerer.feed(f) for f in frames) + markerer.flush()
+    @staticmethod
+    def events(stream):
+        return [json.loads(line[6:]) for line in stream.splitlines()
+                if line.startswith("data: ") and line[6:].strip() != "[DONE]"]
 
-    def events(self, stream):
-        for line in stream.splitlines():
-            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
-                yield json.loads(line[6:])
+    def relay(self, frames, header=HEADER):
+        marker = jev.SummaryMarker(self.TAG, header)
+        return "".join(marker.feed(frame) for frame in frames) + marker.flush()
 
-    def turn(self, answer="Le mot contient 2 r.", note="Je vérifie.",
-             parts=("Le mot ", "contient ", "2 r.")):
-        """One streamed turn: thinking, a commentary note, then the answer."""
-        answer_item = {"id": self.ANSWER_ID, "type": "message", "phase": "final_answer",
-                       "content": [{"type": "output_text", "text": answer}]}
-        frames = [
-            {"type": "response.created", "response": {"id": "resp_a"}},
-            {"type": "response.reasoning_summary_text.delta",
-             "item_id": "rs_1", "summary_index": 0, "delta": "Comptage"},
-            {"type": "response.reasoning_summary_text.done",
-             "item_id": "rs_1", "summary_index": 0, "text": "Comptage"},
-            {"type": "response.output_item.added",
-             "item": {"id": self.NOTE_ID, "type": "message", "phase": "commentary"}},
-            {"type": "response.output_text.delta",
-             "item_id": self.NOTE_ID, "content_index": 0, "delta": note},
-            {"type": "response.output_text.done",
-             "item_id": self.NOTE_ID, "content_index": 0, "text": note},
-            {"type": "response.output_item.done",
-             "item": {"id": self.NOTE_ID, "type": "message", "phase": "commentary",
-                      "content": [{"type": "output_text", "text": note}]}},
-            {"type": "response.output_item.added",
-             "item": {"id": self.ANSWER_ID, "type": "message", "phase": "final_answer"}},
-        ]
-        for part in parts:
-            frames.append({"type": "response.output_text.delta",
-                           "item_id": self.ANSWER_ID, "content_index": 0, "delta": part})
-        frames += [
-            {"type": "response.output_text.done",
-             "item_id": self.ANSWER_ID, "content_index": 0, "text": answer},
-            {"type": "response.output_item.done", "item": answer_item},
-            {"type": "response.completed",
-             "response": {"id": "resp_a", "output": [
-                 {"id": "rs_1", "type": "reasoning",
-                  "summary": [{"type": "summary_text", "text": "Comptage"}]},
-                 answer_item]}},
-        ]
-        return [self.frame(f) for f in frames]
+    def message(self, item_id, text, phase=None):
+        item = {"id": item_id, "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": text}]}
+        if phase:
+            item["phase"] = phase
+        return item
 
-    def answer_deltas(self, stream):
-        text = ""
-        for event in self.events(stream):
-            if event.get("type") == "response.output_text.delta" and event.get("item_id") == self.ANSWER_ID:
-                text += event["delta"]
-        return text
+    def turn(self, phase="final_answer", text="Bonjour à toi."):
+        item = self.message("msg", text, phase)
+        return [self.frame(event) for event in [
+            {"type": "response.created", "response": {"id": "response"}},
+            {"type": "response.output_item.added", "item": dict(item, content=[])},
+            {"type": "response.content_part.added", "item_id": "msg", "content_index": 0,
+             "part": {"type": "output_text", "text": ""}},
+            {"type": "response.output_text.delta", "item_id": "msg", "content_index": 0,
+             "delta": text[:3]},
+            {"type": "response.output_text.delta", "item_id": "msg", "content_index": 0,
+             "delta": text[3:]},
+            {"type": "response.output_text.done", "item_id": "msg", "content_index": 0,
+             "text": text},
+            {"type": "response.content_part.done", "item_id": "msg", "content_index": 0,
+             "part": {"type": "output_text", "text": text}},
+            {"type": "response.output_item.done", "item": item},
+            {"type": "response.completed", "response": {"id": "response", "output": [item]}},
+        ]]
 
-    def test_the_streamed_answer_ends_with_the_route(self):
-        stream = self.relay(*self.turn())
-        self.assertEqual(self.answer_deltas(stream), "Le mot contient 2 r." + self.SIG)
+    def assert_representations(self, stream, expected):
+        events = self.events(stream)
+        deltas = "".join(e["delta"] for e in events if e["type"] == "response.output_text.delta")
+        self.assertEqual(deltas, expected)
+        for event in events:
+            kind = event["type"]
+            if kind == "response.output_text.done":
+                self.assertEqual(event["text"], expected)
+            elif kind == "response.content_part.done":
+                self.assertEqual(event["part"]["text"], expected)
+            elif kind == "response.output_item.done":
+                self.assertEqual(event["item"]["content"][0]["text"], expected)
+            elif kind == "response.completed":
+                self.assertEqual(event["response"]["output"][0]["content"][0]["text"], expected)
 
-    def test_every_representation_of_the_answer_carries_it_once(self):
-        stream = self.relay(*self.turn())
-        self.assertEqual(stream.count(self.LINE), 4, stream)
-        for event in self.events(stream):
-            if event.get("type") == "response.output_text.done" and event.get("item_id") == self.ANSWER_ID:
-                self.assertTrue(event["text"].endswith(self.SIG))
-            if event.get("type") == "response.output_item.done" and event["item"].get("id") == self.ANSWER_ID:
-                self.assertTrue(event["item"]["content"][0]["text"].endswith(self.SIG))
-            if event.get("type") == "response.completed":
-                texts = [part["text"] for item in event["response"]["output"]
-                         if item.get("phase") == "final_answer" for part in item["content"]]
-                self.assertTrue(texts and all(t.endswith(self.SIG) for t in texts))
+    def test_header_is_consistent_for_final_commentary_and_unphased_messages(self):
+        for phase in ("final_answer", "commentary", None):
+            with self.subTest(phase=phase):
+                self.assert_representations(self.relay(self.turn(phase)), self.HEADER + "Bonjour à toi.")
 
-    def test_a_commentary_note_is_never_signed(self):
-        """The note lives behind the divider: signing it would only reach the history."""
-        stream = self.relay(*self.turn(note="Je vérifie la doc."))
-        self.assertNotIn("Je vérifie la doc." + self.SIG, stream)
-        note = [e for e in self.events(stream)
-                if e.get("type") == "response.output_text.done" and e.get("item_id") == self.NOTE_ID]
-        self.assertEqual(note[0]["text"], "Je vérifie la doc.")
+    def test_first_delta_contains_the_header_without_waiting_for_done(self):
+        marker = jev.SummaryMarker(self.TAG, self.HEADER)
+        for frame in self.turn()[:3]:
+            marker.feed(frame)
+        emitted = self.events(marker.feed(self.turn()[3]))
+        self.assertEqual(emitted[0]["delta"], self.HEADER + "Bon")
 
-    def test_the_reasoning_tag_survives_the_second_pass(self):
-        stream = self.relay(*self.turn())
-        self.assertIn("Comptage" + self.TAG, stream)
+    def test_fragmented_utf8_stream_keeps_the_same_header_and_content(self):
+        raw = b"".join(self.turn())
+        chunks = [raw[i:i + 7] for i in range(0, len(raw), 7)]
+        self.assert_representations(self.relay(chunks), self.HEADER + "Bonjour à toi.")
 
-    def test_no_signature_switched_off_changes_nothing(self):
-        stream = self.relay(*self.turn(), signature="")
-        self.assertNotIn(self.LINE, stream)
-        self.assertEqual(self.answer_deltas(stream), "Le mot contient 2 r.")
-        self.assertEqual(stream.count(self.TAG), 3)
+    def test_empty_output_and_disabled_display_are_unchanged(self):
+        self.assert_representations(self.relay(self.turn(text="")), "")
+        self.assert_representations(self.relay(self.turn(), header=None), "Bonjour à toi.")
 
-    def test_a_turn_without_a_flagged_answer_keeps_its_text(self):
-        """Codex alone marks the answer; without the mark nothing is signed."""
-        frames = self.turn()
-        stream = self.relay(*frames)
-        self.assertIn(self.LINE, stream)  # the mark is present in this fixture
-        unflagged = []
-        for frame in frames:
-            event = json.loads(frame.decode()[6:].strip())
-            if event.get("item", {}).get("type") == "message":
-                event["item"].pop("phase", None)
-            if event.get("type") == "response.completed":
-                for item in event["response"]["output"]:
-                    item.pop("phase", None)
-            unflagged.append(self.frame(event))
-        self.assertNotIn(self.LINE, self.relay(*unflagged))
+    def test_header_is_only_on_the_first_text_part(self):
+        parts = [{"type": "output_text", "text": ""},
+                 {"type": "output_text", "text": "first"},
+                 {"type": "output_text", "text": "second"}]
+        item = self.message("msg", "")
+        item["content"] = parts
+        frames = [self.frame({"type": "response.output_text.delta", "item_id": "msg",
+                             "content_index": i, "delta": p["text"]}) for i, p in enumerate(parts)]
+        frames.append(self.frame({"type": "response.completed", "response": {"output": [item]}}))
+        events = self.events(self.relay(frames))
+        self.assertEqual([e["delta"] for e in events[:-1]], ["", self.HEADER + "first", "second"])
+        self.assertEqual([p["text"] for p in events[-1]["response"]["output"][0]["content"]],
+                         ["", self.HEADER + "first", "second"])
 
-    def test_an_empty_answer_is_not_signed(self):
-        stream = self.relay(*self.turn(answer="", parts=()))
-        self.assertNotIn(self.LINE, stream)
+    def test_interleaved_messages_each_get_one_header(self):
+        frames = [self.frame({"type": "response.output_text.delta", "item_id": item,
+                             "content_index": 0, "delta": text})
+                  for item, text in (("a", "one"), ("b", "two"), ("a", " more"))]
+        events = self.events(self.relay(frames))
+        self.assertEqual([e["delta"] for e in events],
+                         [self.HEADER + "one", self.HEADER + "two", " more"])
 
-    def test_stripping_removes_only_our_trailing_line(self):
+    def test_complete_item_is_not_prefixed_twice(self):
+        item = self.message("msg", self.HEADER + "hello", "commentary")
+        stream = self.relay([self.frame({"type": "response.output_item.done", "item": item})])
+        self.assertEqual(self.events(stream)[0]["item"]["content"][0]["text"], self.HEADER + "hello")
+
+    def test_tool_arguments_are_untouched_and_reasoning_retains_its_own_tag(self):
+        tool = {"id": "tool", "type": "function_call", "name": "run", "arguments": '{"x":1}'}
+        frames = [self.frame({"type": "response.output_item.done", "item": tool}),
+                  self.frame({"type": "response.reasoning_summary_text.done",
+                              "item_id": "reasoning", "summary_index": 0, "text": "Checking"})]
+        events = self.events(self.relay(frames))
+        self.assertEqual(events[0]["item"], tool)
+        self.assertEqual(events[1]["text"], "Checking" + self.TAG)
+        self.assertNotIn(self.HEADER, json.dumps(events))
+
+    def test_replayed_headers_and_legacy_footers_are_removed_even_when_display_is_off(self):
         payload = {"input": [
-            {"type": "message", "role": "assistant",
-             "content": [{"type": "output_text", "text": "Le mot contient 2 r." + self.SIG}]},
-            {"type": "message", "role": "assistant",
-             "content": [{"type": "output_text", "text": "sol · low, sans tiret cadratin"}]},
-            {"type": "message", "role": "user",
-             "content": [{"type": "input_text", "text": "et le modèle ?" + self.SIG}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": self.HEADER + "answer"}]},
+            {"role": "assistant", "content": "old answer" + self.LEGACY},
+            {"role": "assistant", "content": "An example:\n" + self.HEADER + "quoted"},
+            {"role": "user", "content": [{"type": "input_text", "text": self.HEADER + "user text"}]},
         ]}
-        with mock.patch.object(jev.os.path, "exists", return_value=True):
-            self.assertEqual(jev.strip_signatures(payload), 1)
-        self.assertEqual(payload["input"][0]["content"][0]["text"], "Le mot contient 2 r.")
-        self.assertEqual(payload["input"][1]["content"][0]["text"], "sol · low, sans tiret cadratin")
-        self.assertEqual(payload["input"][2]["content"][0]["text"], "et le modèle ?" + self.SIG)
-
-    def test_stripping_is_off_without_the_flag(self):
-        payload = {"input": [{"type": "message", "role": "assistant",
-                              "content": [{"type": "output_text", "text": "a" + self.SIG}]}]}
         with mock.patch.object(jev.os.path, "exists", return_value=False):
-            self.assertEqual(jev.strip_signatures(payload), 0)
-        self.assertTrue(payload["input"][0]["content"][0]["text"].endswith(self.SIG))
+            self.assertEqual(jev.strip_signatures(payload), 2)
+        self.assertEqual(payload["input"][0]["content"][0]["text"], "answer")
+        self.assertEqual(payload["input"][1]["content"], "old answer")
+        self.assertEqual(payload["input"][2]["content"], "An example:\n" + self.HEADER + "quoted")
+        self.assertEqual(payload["input"][3]["content"][0]["text"], self.HEADER + "user text")
+
+    def test_header_generation_uses_the_actual_route_and_handles_unknown_effort(self):
+        with mock.patch.object(jev.os.path, "exists", return_value=True):
+            self.assertEqual(jev.answer_signature({"model": jev.SOL, "effort": "low"}), self.HEADER)
+            self.assertIn("thinking: non spécifié", jev.answer_signature({"model": jev.ASTRA}))
+        with mock.patch.object(jev.os.path, "exists", return_value=False):
+            self.assertIsNone(jev.answer_signature({"model": jev.LUNA, "effort": "low"}))
 
 
 if __name__ == "__main__":

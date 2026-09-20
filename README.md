@@ -262,6 +262,7 @@ stops answering.
 |---|---|
 | Watch decisions | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
 | See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
+| Show the model and thinking above every assistant message | `touch ~/.codex/codex-router/jev-router.signature` — a leading `**🧠 sol · thinking: high**` appears from the first text fragment, including commentary and unphased replies; remove the file to disable |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug capture (shapes + raw streams) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |

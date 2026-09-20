@@ -237,6 +237,48 @@ class TandemHandoff(unittest.TestCase):
         self.assertIn(b"rate limit", body)
         self.assertEqual(len(Edge.attempts), 2, "one try per tandem model, no loop")
 
+    def test_header_covers_streaming_nonstreaming_and_strips_replayed_metadata(self):
+        with open(jev.SIGNATURE_PATH, "w"):
+            pass
+        item = {"id": "msg", "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "OK"}]}
+        Edge.body = b"".join(("data: " + json.dumps(event) + "\n\n").encode() for event in [
+            {"type": "response.output_item.added", "item": dict(item, content=[])},
+            {"type": "response.output_text.delta", "item_id": "msg", "content_index": 0, "delta": "OK"},
+            {"type": "response.completed",
+             "response": {"id": "r", "status": "completed", "output": [item]}},
+        ])
+        header = jev.answer_signature({"model": jev.GO_FRONTIER, "effort": "high"})
+        for stream in (True, False):
+            status, body = self.call(stream=stream, input=[
+                {"role": "assistant", "content": header + "Previous reply"},
+                {"role": "user", "content": "Continue"},
+            ])
+            self.assertEqual(status, 200)
+            self.assertEqual(Edge.payloads[-1]["input"][0]["content"], "Previous reply")
+            if stream:
+                events = [json.loads(line[6:]) for line in body.decode().splitlines()
+                          if line.startswith("data: ")]
+                text = "".join(e["delta"] for e in events if e["type"] == "response.output_text.delta")
+                self.assertEqual(text, header + "OK")
+                response = events[-1]["response"]
+            else:
+                response = json.loads(body)
+            self.assertEqual(response["output"][0]["content"][0]["text"], header + "OK")
+        # Shadow mode serves Astra while Jev proposes Luna; the header must
+        # describe the actual response, not the hypothetical choice.
+        with open(jev.SHADOW_PATH, "w"):
+            pass
+        jev.native_dry = lambda: None
+        jev.load_key = lambda: "fixture-key"
+        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
+            "route": {"choice": f"{jev.LUNA}:low", "confidence": 0.9},
+        }}):
+            status, body = self.call(reasoning={"effort": "high"})
+        self.assertEqual(status, 200)
+        actual = jev.answer_signature({"model": jev.ASTRA, "effort": "high"})
+        self.assertEqual(json.loads(body)["output"][0]["content"][0]["text"], actual + "OK")
+
     def test_a_relayed_stream_repeats_the_id_it_opened_on(self):
         # The edge re-encodes the id of the terminal event. Handing the caller
         # that pair is what the Responses transform in front of the router turns
