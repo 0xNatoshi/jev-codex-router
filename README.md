@@ -62,7 +62,6 @@ low-confidence fallback to Sol, mechanical-step exception, or compaction pin.
 A valid decision is applied unchanged even when several pairs are close. Jev's
 confidence and full choice distribution are logged separately; neither is a
 measured probability that the selected model will successfully finish the task.
-The gateway's winning probability is never relabelled as TypeSafe confidence.
 
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,

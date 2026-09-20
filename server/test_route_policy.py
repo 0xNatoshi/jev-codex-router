@@ -33,14 +33,6 @@ class JointPolicy(unittest.TestCase):
             self.assertEqual(result["chosen_probability"], 0.2)
             self.assertEqual(result["gate"], "apply")
 
-    def test_confidence_is_not_invented_from_winning_probability(self):
-        answer = self.answer()
-        del answer["route"]["confidence"]
-        answer["route"]["type"] = "choice"
-        result = decision_from_answers(jev._typesafe_answers(answer))
-        self.assertIsNone(result["confidence"])
-        self.assertEqual(result["chosen_probability"], 0.2)
-
     def test_invalid_choices_cannot_become_an_unrequested_pair(self):
         for answer in ({}, None, {"route": None}, {"route": {"choice": []}},
                        {"route": {"choice": f"{jev.LUNA}:ultra"}},

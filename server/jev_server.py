@@ -82,13 +82,8 @@ CALLER_SECRET_PATH = os.path.join(STATE, "caller-secret")
 OFF_PATH = os.path.join(STATE, "jev-router.off")
 SHADOW_PATH = os.path.join(STATE, "jev-router.shadow")
 DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
-# The routed model + thinking level, written where the Codex app really shows
-# it. The app collapses every turn's activity (thinking, commentary, tool calls)
-# behind its "worked for" divider and renders only the final answer as body
-# text, so a tag inside the thinking block stays invisible unless the divider is
-# expanded. With this file present, the same tag is appended to the visible
-# answer instead, and stripped back out of the answers replayed in later
-# requests -- the model must never read, copy or contradict its own signature.
+# Opt-in route header on each assistant text message. Presentation metadata is
+# removed from replayed history, including legacy trailing signatures.
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
@@ -96,17 +91,11 @@ LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.1"
+VERSION = "1.2"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
 
-# Vercel AI Gateway evaluation route (free jev promo until 2026-09-25).
-# Activated by the flag file below; any error falls back to the direct TypeSafe
-# API (fail-open, the router's non-negotiable contract).
-GATEWAY_API = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-GATEWAY_MODEL = "typesafe-ai/jev"
-GATEWAY_FLAG = os.path.join(STATE, "jev-gateway-promo")
 
 # Generic ask surface (POST /ask): a thin typed pass-through to System One for
 # callers that own their question set — the in-app browser chooser is the first
@@ -346,84 +335,8 @@ def call_jev(key, state, questions=None, timeout=4.0):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def load_gateway_key():
-    """AI_GATEWAY_API_KEY: env files win (the process environment can be stale)."""
-    for path in (os.path.expanduser("~/.hermes/.env"), os.path.expanduser("~/.jev.env")):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                for line in fh:
-                    if line.startswith("AI_GATEWAY_API_KEY="):
-                        return line.split("=", 1)[1].strip().strip("'\"")
-        except OSError:
-            continue
-    return os.environ.get("AI_GATEWAY_API_KEY", "").strip()
-
-
-def _gateway_questions(questions):
-    """The gateway names the yes/no type `boolean`; TypeSafe calls it `noul`."""
-    out = {}
-    for name, question in (questions or {}).items():
-        if isinstance(question, dict) and question.get("type") == "noul":
-            question = dict(question)
-            question["type"] = "boolean"
-        out[name] = question
-    return out
-
-
-def _typesafe_answers(answers):
-    """Map gateway answers back onto the TypeSafe shapes the callers read."""
-    out = {}
-    for name, answer in (answers or {}).items():
-        if isinstance(answer, dict) and answer.get("type") == "boolean":
-            out[name] = {"type": "noul", "noul": answer.get("probability", answer.get("noul"))}
-        elif isinstance(answer, dict) and answer.get("type") == "choice":
-            # A winning probability is not TypeSafe's distribution confidence.
-            # Preserve the provider value; leave it absent when not supplied.
-            out[name] = answer
-        else:
-            out[name] = answer
-    return out
-
-
-def call_jev_gateway(state, questions=None, timeout=6.0):
-    """One System One call through the Vercel AI Gateway evaluation route."""
-    key = load_gateway_key()
-    if not key:
-        raise RuntimeError("AI_GATEWAY_API_KEY is not configured")
-    body = json.dumps({
-        "state": state,
-        "questions": _gateway_questions(QUESTIONS if questions is None else questions),
-        "providerOptions": {},
-    }).encode()
-    req = urllib.request.Request(
-        GATEWAY_API,
-        data=body,
-        headers={
-            "Authorization": "Bearer " + key,
-            "Content-Type": "application/json",
-            "ai-evaluation-model-specification-version": "4",
-            "ai-gateway-auth-method": "api-key",
-            "ai-gateway-protocol-version": "0.0.1",
-            "ai-model-id": GATEWAY_MODEL,
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return {
-        "model": data.get("model") or GATEWAY_MODEL,
-        "answers": _typesafe_answers(data.get("answers")),
-        "usage": data.get("usage") or {},
-    }
-
-
 def call_jev_routed(key, state, questions=None, timeout=4.0):
-    """Gateway first while the promo flag is set, TypeSafe as the fail-open floor."""
-    if os.path.exists(GATEWAY_FLAG):
-        try:
-            return call_jev_gateway(state, questions, timeout=max(timeout, 6.0))
-        except Exception:
-            pass
+    """One System One call, on the direct TypeSafe API."""
     return call_jev(key, state, questions, timeout=timeout)
 
 
@@ -694,36 +607,26 @@ def route_marker(model, effort):
 
 
 def answer_signature(shown):
-    """Trailing line for the visible answer, or None while switched off.
-
-    The app renders the final answer as body text and everything else of the
-    turn behind a collapsed divider, so this is the one place a per-turn route
-    can be read without a click.
-    """
+    """Leading model/thinking label for each assistant message, when enabled."""
     if not os.path.exists(SIGNATURE_PATH):
         return None
     short, glyph = route_label(shown.get("model"))
-    effort = shown.get("effort")
-    return f"\n\n— {glyph} {short}" + (f" · {effort}" if effort else "")
+    effort = shown.get("effort") or "non spécifié"
+    return f"**{glyph} {short} · thinking: {effort}**\n\n"
 
 
-# The signature as it reads in a replayed transcript. Anchored at the end on
-# purpose: only the trailing line this server wrote is removed, never prose that
-# happens to mention a model.
+# Only our exact presentation forms, at the boundaries of assistant text.
+# Retain the trailing form solely for old transcripts.
+HEADER_RX = re.compile(
+    r"\A\*\*(?:⚡|🧠|🚀|🌍|🐳|✨) [A-Za-z0-9._/-]+ · thinking: "
+    r"(?:low|medium|high|xhigh|max|non spécifié)\*\*\r?\n\r?\n")
 SIGNATURE_RX = re.compile(
-    r"\s*\n*—\s+[^\s]+\s+[A-Za-z0-9._/-]+(?:\s+·\s+(?:low|medium|high|xhigh|max))?\s*$")
+    r"\s*\n*—\s+(?:⚡|🧠|🚀|🌍|🐳|✨)\s+[A-Za-z0-9._/-]+"
+    r"(?:\s+·\s+(?:low|medium|high|xhigh|max))?\s*$")
 
 
 def strip_signatures(payload):
-    """Drop our own answer signatures from the history sent upstream.
-
-    The signature is client-visible state, never model input: replayed, the
-    model would read the route it was served by and could echo a stale one into
-    a later answer. Only assistant bodies are touched, and only a trailing
-    signature is removed.
-    """
-    if not os.path.exists(SIGNATURE_PATH):
-        return 0
+    """Remove route annotations before classification and forwarding, even if disabled."""
     items = payload.get("input")
     if not isinstance(items, list):
         return 0
@@ -732,13 +635,19 @@ def strip_signatures(payload):
         if not isinstance(item, dict) or item.get("role") != "assistant":
             continue
         content = item.get("content")
+        if isinstance(content, str):
+            cleaned = SIGNATURE_RX.sub("", HEADER_RX.sub("", content))
+            if cleaned != content:
+                item["content"] = cleaned
+                removed += 1
+            continue
         for block in content if isinstance(content, list) else []:
             if not isinstance(block, dict):
                 continue
             text = block.get("text")
             if not isinstance(text, str) or not text:
                 continue
-            cleaned = SIGNATURE_RX.sub("", text)
+            cleaned = SIGNATURE_RX.sub("", HEADER_RX.sub("", text))
             if cleaned != text:
                 block["text"] = cleaned
                 removed += 1
@@ -771,11 +680,10 @@ class SummaryMarker:
     be appended in place to it and to the matching done events: no fabricated
     events, no sequence-number surgery, byte-exact pass-through everywhere else.
 
-    Passed a ``signature`` (the switchable answer tag) it does the same for the
-    turn's final answer: the answer's deltas are held back one event so the last
-    one and the matching done/terminal events all end with the tag. The visible
-    answer is the only part of a turn the app renders without expanding its
-    activity divider, so that is where a route has to be written to be read.
+    A ``signature`` now means a leading route header on every assistant text
+    message, including commentary and messages without a phase. The first text
+    delta receives it immediately; done events and full items carry the same
+    prefix. Tool arguments and reasoning content never receive this header.
 
     The same pass keeps a relayed stream's response id consistent. A Codex-dry
     call crosses the local edge, which encrypts response ids, so the terminal
@@ -784,7 +692,6 @@ class SummaryMarker:
     itself and replaces the whole turn with an error event. The id announced by
     `response.created` is the one that travels, so a terminal event is rewritten
     onto it before the block leaves.
-    Only active for streamed responses.
     """
 
     def __init__(self, marker, signature=None):
@@ -794,8 +701,8 @@ class SummaryMarker:
         self._buf = ""
         self._block = []
         self._held = None  # (key, block_lines)
-        self._held_text = None  # (key, block_lines) — the answer's last delta
-        self._answer_item = None  # the item whose text is the visible answer
+        self._headed = set()  # messages whose streamed text already received a header
+        self._header_parts = {}  # first nonempty text part of each message
         self._response_id = None  # the id this stream's completion must repeat
         self.usage = None
         self.terminal_type = None
@@ -834,68 +741,44 @@ class SummaryMarker:
         return value + self.marker
 
     def _sign(self, value):
-        """Append the answer signature once — never onto an empty answer."""
-        if not self.signature or not isinstance(value, str) or not value.strip():
+        """Prefix a full text representation once, preserving an empty output."""
+        if not self.signature or not isinstance(value, str) or not value:
             return value
-        if self.signature in value:
-            return value
-        return value + self.signature
+        return value if value.startswith(self.signature) else self.signature + value
 
-    def _sign_delta_block(self, block):
-        data = self._data(block)
-        if not isinstance(data, dict):
-            return block
-        data["delta"] = self._sign(data.get("delta"))
-        return self._rebuild(block, data)
+    @staticmethod
+    def _message_key(data):
+        return data.get("item_id") or ("output", data.get("output_index", 0))
 
     def _sign_done_block(self, block):
         data = self._data(block)
         if not isinstance(data, dict):
             return block
-        if "text" in data:
-            data["text"] = self._sign(data.get("text"))
+        target = data.get("part") if isinstance(data.get("part"), dict) else data
+        text = target.get("text")
+        if isinstance(text, str) and text:
+            key = self._message_key(data)
+            index = data.get("content_index", 0)
+            if self._header_parts.setdefault(key, index) == index:
+                target["text"] = self._sign(text)
         return self._rebuild(block, data)
 
     def _sign_message_item(self, item):
-        """Sign a finished assistant message — the turn's answer, never a note.
-
-        Only the item Codex marks `final_answer` is signed: commentary messages
-        and reasoning live behind the app's collapsed activity divider, and
-        signing them would only duplicate the tag into the replayed history.
-        """
-        if not self.signature or not isinstance(item, dict):
+        """One header on the first nonempty text part of an assistant message."""
+        if (not self.signature or not isinstance(item, dict)
+                or item.get("type") != "message" or item.get("role") not in (None, "assistant")):
             return
-        if item.get("type") != "message" or item.get("phase") != "final_answer":
-            return
-        for part in item.get("content") or []:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
+        for index, part in enumerate(item.get("content") or []):
+            if (isinstance(part, dict) and part.get("type") == "output_text"
+                    and isinstance(part.get("text"), str) and part["text"]):
                 part["text"] = self._sign(part["text"])
+                self._header_parts.setdefault(item.get("id"), index)
+                return
 
-    def _is_answer(self, item):
-        if not isinstance(item, dict) or item.get("type") != "message":
-            return False
-        return item.get("phase") == "final_answer" or (
-            self._answer_item is not None and item.get("id") == self._answer_item
-        )
-
-    def _flush_held(self, out, keep_text=False):
-        """Flush the held blocks untouched; the answer hold survives on request."""
+    def _flush_held(self, out):
         if self._held is not None:
             out.append(self._emit(self._held[1]))
             self._held = None
-        if self._held_text is not None and not keep_text:
-            out.append(self._emit(self._held_text[1]))
-            self._held_text = None
-
-    def _flush_answer_hold(self, out, item_id):
-        """Flush the held answer delta, signed when it is the item's last one."""
-        if self._held_text is None:
-            return
-        held = self._held_text[1]
-        if self._held_text[0][0] == item_id:
-            held = self._sign_delta_block(held)
-        out.append(self._emit(held))
-        self._held_text = None
 
     def _tag_delta_block(self, block):
         data = self._data(block)
@@ -947,26 +830,38 @@ class SummaryMarker:
             response = data.get("response")
             if isinstance(response, dict) and isinstance(response.get("id"), str):
                 self._response_id = response["id"]
-        if dtype == "response.output_item.added":
+        if self.signature and dtype == "response.output_item.added":
             item = data.get("item")
-            if self.signature and isinstance(item, dict) and item.get("phase") == "final_answer":
-                # Codex marks the item that becomes the visible answer here; the
-                # deltas of every other message (commentary) are left alone.
-                self._answer_item = item.get("id")
-        if dtype == "response.output_text.delta":
-            if self.signature and data.get("item_id") == self._answer_item and data.get("delta"):
-                self._flush_held(out, keep_text=True)
-                if self._held_text is not None:
-                    out.append(self._emit(self._held_text[1]))
-                key = (data.get("item_id"), data.get("content_index"))
-                self._held_text = (key, block)
+            if isinstance(item, dict) and item.get("type") == "message":
+                self._sign_message_item(item)
+                if item.get("id") in self._header_parts:
+                    self._headed.add(item["id"])
+                self._flush_held(out)
+                out.append(self._emit(self._rebuild(block, data)))
                 return out
-        if dtype == "response.output_text.done":
-            if self.signature and data.get("item_id") == self._answer_item:
-                self._flush_held(out, keep_text=True)
-                self._flush_answer_hold(out, data.get("item_id"))
-                out.append(self._emit(self._sign_done_block(block)))
-                return out
+        if self.signature and dtype == "response.output_text.delta":
+            key = self._message_key(data)
+            delta = data.get("delta")
+            if isinstance(delta, str) and delta and key not in self._headed:
+                self._header_parts.setdefault(key, data.get("content_index", 0))
+                data["delta"] = self._sign(delta)
+                self._headed.add(key)
+                block = self._rebuild(block, data)
+            self._flush_held(out)
+            out.append(self._emit(block))
+            return out
+        if self.signature and dtype in ("response.output_text.done", "response.content_part.done"):
+            self._flush_held(out)
+            out.append(self._emit(self._sign_done_block(block)))
+            return out
+        if self.signature and dtype == "response.content_part.added":
+            part = data.get("part") or {}
+            if part.get("type") == "output_text" and part.get("text"):
+                block = self._sign_done_block(block)
+                self._headed.add(self._message_key(data))
+            self._flush_held(out)
+            out.append(self._emit(block))
+            return out
         if dtype == "response.reasoning_summary_text.delta":
             if self._held is not None:
                 out.append(self._emit(self._held[1]))
@@ -1004,9 +899,8 @@ class SummaryMarker:
                     self._held = None
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
-            if self.signature and self._is_answer(item):
-                self._flush_held(out, keep_text=True)
-                self._flush_answer_hold(out, item.get("id"))
+            if self.signature and item.get("type") == "message":
+                self._flush_held(out)
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
         if dtype in TERMINAL_EVENT_TYPES:
@@ -1098,7 +992,7 @@ def log_line(record):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "jev-router/1.1"
+    server_version = "jev-router/1.2"
 
     def log_message(self, *args):
         pass
@@ -1253,7 +1147,9 @@ class Handler(BaseHTTPRequestHandler):
             speed = "default"
             gate = f"codex_dry({dry_reason}):{native_model}"
 
-        shown = would if would else {"model": model, "effort": effort}
+        # Display the model actually serving the request, including shadow and
+        # operational fallbacks, rather than a hypothetical classification.
+        shown = {"model": model, "effort": effort or (payload.get("reasoning") or {}).get("effort")}
         marker = route_marker(shown["model"], shown["effort"])
         signature = answer_signature(shown)
 
@@ -1341,7 +1237,6 @@ class Handler(BaseHTTPRequestHandler):
             "speed": speed,
             "native": native_model,
             "dry": dry_reason,
-            "upstream": "gateway" if os.path.exists(GATEWAY_FLAG) else "typesafe",
             "retried": retried,
             "fallback": fallback,
             "jev_ms": jev_ms,
@@ -1455,6 +1350,9 @@ class Handler(BaseHTTPRequestHandler):
                         response_status = assembled.get("status")
                         if response_status in ("completed", "incomplete", "failed"):
                             attempt["terminal_type"] = f"response.{response_status}"
+                        headerer = SummaryMarker("", signature)
+                        for item in assembled.get("output") or []:
+                            headerer._sign_message_item(item)
                         data = json.dumps(assembled).encode("utf-8")
                         out_ctype = "application/json"
                 self.send_response(status)
