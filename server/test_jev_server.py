@@ -208,5 +208,88 @@ class Policy(unittest.TestCase):
         self.assertEqual(effort, "medium")
 
 
+class JevTaskInput(unittest.TestCase):
+    """Jev judges the current ask: not the thread, and not Codex's own blocks.
+
+    A turn carries machine-generated envelopes (goal context, plugin catalog,
+    environment) that are far longer than the 500 chars Jev was calibrated on,
+    and Codex appends some of them *after* the user's text. Clipping the raw head
+    sent Jev nothing but the envelope on 1 291 of 4 516 live calls, so the task
+    is unwrapped and clipped head+tail instead.
+    """
+
+    ASK = "Corrige le parseur de drift.test.ts, puis relance le backtest complet."
+    GOAL = ('<codex_internal_context source="goal">\n'
+            "Continue working toward the active thread goal.\n\n"
+            "The objective below is a short navigation aid. "
+            + ("navigation aid. " * 300) + "\n</codex_internal_context>")
+    ENV = "<environment_context>\n<cwd>/Users/x/project</cwd>\n</environment_context>"
+    PLUGINS = ("<recommended_plugins>\nHere is a list of plugins that are available "
+               "but not installed.\n" + ("- Some Plugin (some-plugin@openai-curated-remote)\n" * 40)
+               + "</recommended_plugins>")
+
+    def user_item(self, text):
+        return {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
+
+    def task(self, text):
+        return jev.extract({"input": [self.user_item(text)]})[0]
+
+    def state(self, thread):
+        payload = {"input": thread}
+        task, prev_assistant, signals = jev.extract(payload)
+        return jev.jev_state(task, prev_assistant, signals, jev.classify(payload))
+
+    def test_a_goal_block_does_not_hide_the_ask(self):
+        task = self.task(self.GOAL + "\n\n" + self.ASK)
+        self.assertIn("Corrige le parseur", task)
+        self.assertNotIn("codex_internal_context", task)
+
+    def test_an_appended_environment_block_is_dropped(self):
+        task = self.task(self.ASK + "\n" + self.ENV)
+        self.assertIn("relance le backtest", task)
+        self.assertNotIn("environment_context", task)
+
+    def test_a_goal_only_turn_keeps_the_objective_and_loses_the_tags(self):
+        task = self.task(self.GOAL)
+        self.assertIn("Continue working toward the active thread goal.", task)
+        self.assertNotIn("codex_internal_context", task)
+
+    def test_an_envelope_without_a_request_gives_jev_nothing(self):
+        """A catalog-only turn has no ask in it: the caller fails open."""
+        self.assertEqual(self.task(self.PLUGINS), "")
+        self.assertEqual(self.task(self.ENV), "")
+
+    def test_the_tail_of_a_long_prompt_survives_the_clip(self):
+        task = self.task("Contexte. " * 900 + self.ASK)
+        self.assertIn("relance le backtest complet.", task)
+        self.assertLessEqual(len(task), jev.TASK_CHARS)
+        self.assertIn(jev.TASK_CLIP_MARK.strip(), task)
+
+    def test_a_short_prompt_is_sent_untouched(self):
+        self.assertEqual(self.task(self.ASK), self.ASK)
+
+    def test_the_thread_length_never_reaches_jev(self):
+        history = [self.user_item("Question %d" % i) for i in range(300)]
+        assistant = {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "Reponse"}]}
+        short = self.state([assistant, self.user_item(self.ASK)])
+        long_thread = self.state(history + [assistant, self.user_item(self.ASK)])
+        self.assertEqual(short, long_thread)
+
+    def test_only_the_last_tool_output_travels_and_only_as_a_digest(self):
+        output = {"type": "function_call_output", "output": "ok\n" + ("ligne\n" * 5_000)}
+        state = self.state([self.user_item(self.ASK), output])
+        tail = state["step"]["last_tool_output_tail"]
+        self.assertEqual(state["step"]["type"], "tool_step")
+        self.assertEqual(len(tail), jev.DIGEST_CHARS)
+        self.assertFalse(state["step"]["contains_error"])
+
+    def test_the_assistant_side_is_bounded(self):
+        assistant = {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "a" * 4_000}]}
+        state = self.state([self.user_item(self.ASK), assistant])
+        self.assertEqual(len(state["previous_assistant"]), 240)
+
+
 if __name__ == "__main__":
     unittest.main()

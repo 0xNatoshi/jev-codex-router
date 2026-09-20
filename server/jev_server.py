@@ -106,6 +106,13 @@ VERSION = "1.0"
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
 
+# Vercel AI Gateway evaluation route (free jev promo until 2026-09-25).
+# Activated by the flag file below; any error falls back to the direct TypeSafe
+# API (fail-open, the router's non-negotiable contract).
+GATEWAY_API = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
+GATEWAY_MODEL = "typesafe-ai/jev"
+GATEWAY_FLAG = os.path.join(STATE, "jev-gateway-promo")
+
 # Generic ask surface (POST /ask): a thin typed pass-through to System One for
 # callers that own their question set — the in-app browser chooser is the first
 # one. No routing policy, no logging of the caller's state.
@@ -122,8 +129,8 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CONF_GATE = 0.5
 
 # Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
-GO_STANDARD = "opencode-go/deepseek-v4.1-flash"
-GO_FRONTIER = "opencode-go/glm-5.3-flash"
+GO_STANDARD = "deepseek/deepseek-v4.1-flash"
+GO_FRONTIER = "deepseek/deepseek-v4.1-flash"
 GO_TANDEM = (GO_STANDARD, GO_FRONTIER)
 # The tandem's own thinking ladder. Both Go models declare low/high/max where the
 # native triptych exposes low/medium/high/xhigh/max, so a depth keeps its meaning
@@ -163,6 +170,37 @@ TERMINAL_EVENT_TYPES = ("response.completed", "response.incomplete", "response.f
 ERROR_RX = re.compile(
     r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
 DIGEST_CHARS = 520
+
+# The task budget Jev was calibrated on (500 chars), spent as a head+tail window
+# so the tail survives: Codex puts its own blocks around the user's text, and the
+# ask itself can be the last thing in a long paste. 320 + marker + 171 <= 500.
+TASK_CHARS = 500
+TASK_HEAD_CHARS = 320
+TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
+TASK_CLIP_MARK = "\n[...]\n"
+
+# Codex wraps every turn in machine-generated blocks (goal context, plugin
+# catalog, environment, skills, mode notices). They are the longest part of a
+# turn and they describe the harness, not the work, so they are removed before
+# the clip instead of eating the budget. A block that is never closed simply
+# does not match and is left to the clip.
+ENVELOPE_TAGS = (
+    "codex_internal_context", "recommended_plugins", "environment_context",
+    "skills_instructions", "plugins_instructions", "apps_instructions",
+    "app-context", "collaboration_mode", "model_switch", "multi_agent_mode",
+    "permissions instructions", "memory_instructions",
+)
+ENVELOPE_RX = re.compile(
+    r"<(%s)(?:\s[^<>]*)?>.*?</\1\s*>" % "|".join(re.escape(t) for t in ENVELOPE_TAGS),
+    re.S)
+# `<codex_internal_context source="goal">` is the one envelope whose body is a
+# work objective ("Continue working toward the active thread goal. / The
+# objective below is ..."), so it is what an envelope-only turn falls back to.
+GOAL_BODY_RX = re.compile(
+    r'<codex_internal_context(?:\s[^<>]*)?>(.*?)</codex_internal_context\s*>', re.S)
+# A single envelope has been seen at 950k chars. Past this size only the two ends
+# are scanned, which is where the user's text sits anyway.
+ENVELOPE_SCAN_CHARS = 200_000
 
 QUESTIONS = {
     "tier": {
@@ -354,6 +392,91 @@ def call_jev(key, state, questions=None, timeout=4.0):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def load_gateway_key():
+    """AI_GATEWAY_API_KEY: env files win (the process environment can be stale)."""
+    for path in (os.path.expanduser("~/.hermes/.env"), os.path.expanduser("~/.jev.env")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("AI_GATEWAY_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip("'\"")
+        except OSError:
+            continue
+    return os.environ.get("AI_GATEWAY_API_KEY", "").strip()
+
+
+def _gateway_questions(questions):
+    """The gateway names the yes/no type `boolean`; TypeSafe calls it `noul`."""
+    out = {}
+    for name, question in (questions or {}).items():
+        if isinstance(question, dict) and question.get("type") == "noul":
+            question = dict(question)
+            question["type"] = "boolean"
+        out[name] = question
+    return out
+
+
+def _typesafe_answers(answers):
+    """Map gateway answers back onto the TypeSafe shapes the callers read."""
+    out = {}
+    for name, answer in (answers or {}).items():
+        if isinstance(answer, dict) and answer.get("type") == "boolean":
+            out[name] = {"type": "noul", "noul": answer.get("probability", answer.get("noul"))}
+        elif isinstance(answer, dict) and answer.get("type") == "choice":
+            if "confidence" not in answer and isinstance(answer.get("probabilities"), dict):
+                probs = answer["probabilities"]
+                conf = probs.get(answer.get("choice"))
+                if not isinstance(conf, (int, float)) and probs:
+                    conf = max(probs.values())
+                answer = dict(answer, confidence=conf)
+            out[name] = answer
+        else:
+            out[name] = answer
+    return out
+
+
+def call_jev_gateway(state, questions=None, timeout=6.0):
+    """One System One call through the Vercel AI Gateway evaluation route."""
+    key = load_gateway_key()
+    if not key:
+        raise RuntimeError("AI_GATEWAY_API_KEY is not configured")
+    body = json.dumps({
+        "state": state,
+        "questions": _gateway_questions(QUESTIONS if questions is None else questions),
+        "providerOptions": {},
+    }).encode()
+    req = urllib.request.Request(
+        GATEWAY_API,
+        data=body,
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "ai-evaluation-model-specification-version": "4",
+            "ai-gateway-auth-method": "api-key",
+            "ai-gateway-protocol-version": "0.0.1",
+            "ai-model-id": GATEWAY_MODEL,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return {
+        "model": data.get("model") or GATEWAY_MODEL,
+        "answers": _typesafe_answers(data.get("answers")),
+        "usage": data.get("usage") or {},
+    }
+
+
+def call_jev_routed(key, state, questions=None, timeout=4.0):
+    """Gateway first while the promo flag is set, TypeSafe as the fail-open floor."""
+    if os.path.exists(GATEWAY_FLAG):
+        try:
+            return call_jev_gateway(state, questions, timeout=max(timeout, 6.0))
+        except Exception:
+            pass
+    return call_jev(key, state, questions, timeout=timeout)
+
+
 def validate_ask(body):
     """Check a POST /ask body. Returns (state, questions, error) — error is None when valid.
 
@@ -408,16 +531,19 @@ def route(tier, depth, conf, step=None):
     tier's stated job, and luna runs on the priority fast lane at ~1/10th of
     sol's rates.
     """
+    shallow = (depth or "low") in ("low", "medium")
+    errored = isinstance(step, dict) and bool(step.get("errored"))
+    tool_step = isinstance(step, dict) and step.get("step_type") == "tool_step"
+    # Tâche simple = luna, quelle que soit la proposition de Jev : une réponse
+    # conversationnelle courte (pas de tool step, pas d'erreur, profondeur faible)
+    # ne justifie ni sol ni astra (Thib 20/09 : « test = réponse simple = luna »).
+    # Les tool steps gardent la politique backtestée (anti-downgrade).
+    if not tool_step and not errored and shallow:
+        return LUNA, "max", "priority", "hold(luna_chat)"
     if conf is not None and conf < CONF_GATE:
         # Backtest finding: falling back to astra ate ~80% of the savings;
         # the middle tier keeps the anti-downgrade property without burning the frontier.
-        if (
-            tier == LUNA
-            and isinstance(step, dict)
-            and step.get("step_type") == "tool_step"
-            and not step.get("errored")
-            and (depth or "low") in ("low", "medium")
-        ):
+        if tool_step and tier == LUNA and not errored:
             return LUNA, "max", "priority", "hold(luna_step)"
         return SOL, clamp_effort(depth), "default", "hold(sol)"
     if tier == LUNA:
@@ -508,7 +634,7 @@ def extract(payload):
                 last_assistant = _content_text(item.get("content"))
             if last_user and last_assistant:
                 break
-    return last_user.strip(), last_assistant.strip(), {
+    return task_for_jev(last_user), last_assistant.strip(), {
         "n_items": n_items,
         "has_image": has_image,
         "tool_history": tool_tail,
@@ -561,6 +687,28 @@ def classify(payload):
         elif last.get("role") == "user":
             detail["step_type"] = "user_turn"
     return detail
+
+
+def jev_state(task, prev_assistant, signals, step):
+    """The state sent to Jev: the current ask plus signals that do not grow.
+
+    `n_items` is deliberately left out. It is the one number that scales with the
+    thread, and the calibrated shapes (backtest, shadow replay) never carried it,
+    so letting it travel would make the same last exchange judge differently in a
+    long thread than in a short one — the opposite of per-call routing. It stays
+    in the local decision log.
+    """
+    state = {
+        "task": task,
+        "signals": {k: v for k, v in signals.items() if k != "n_items"},
+        "step": {"type": step["step_type"]},
+    }
+    if prev_assistant:
+        state["previous_assistant"] = prev_assistant[-240:]
+    if step["step_type"] == "tool_step":
+        state["step"]["last_tool_output_tail"] = step["digest"]
+        state["step"]["contains_error"] = step["errored"]
+    return state
 
 
 def _debug_shape(payload):
@@ -1042,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(503, {"error": {"message": "TYPESAFE_API_KEY is not configured"}})
         t0 = time.time()
         try:
-            answer = call_jev(key, state, questions, timeout=ASK_TIMEOUT)
+            answer = call_jev_routed(key, state, questions, timeout=ASK_TIMEOUT)
         except Exception as exc:
             return self._json(502, {"error": {"message": f"jev: {exc}"[:300]}})
         return self._json(200, {
@@ -1126,15 +1274,9 @@ class Handler(BaseHTTPRequestHandler):
             key = load_key()
             if key and task:
                 jt0 = time.time()
-                state = {"task": task[:500], "signals": signals,
-                         "step": {"type": step["step_type"]}}
-                if prev_assistant:
-                    state["previous_assistant"] = prev_assistant[-240:]
-                if step["step_type"] == "tool_step":
-                    state["step"]["last_tool_output_tail"] = step["digest"]
-                    state["step"]["contains_error"] = step["errored"]
+                state = jev_state(task, prev_assistant, signals, step)
                 try:
-                    answer = (call_jev(key, state).get("answers") or {})
+                    answer = (call_jev_routed(key, state).get("answers") or {})
                     tier_ans = answer.get("tier") or {}
                     tier = tier_ans.get("choice") if tier_ans.get("choice") in TIERS else None
                     conf = tier_ans.get("confidence")
@@ -1247,6 +1389,7 @@ class Handler(BaseHTTPRequestHandler):
             "speed": speed,
             "native": native_model,
             "dry": dry_reason,
+            "upstream": "gateway" if os.path.exists(GATEWAY_FLAG) else "typesafe",
             "retried": retried,
             "fallback": fallback,
             "jev_ms": jev_ms,
