@@ -77,6 +77,18 @@ class AnswerHeader(unittest.TestCase):
         emitted = self.events(marker.feed(self.turn()[3]))
         self.assertEqual(emitted[0]["delta"], self.HEADER + "Bon")
 
+    def test_native_empty_terminal_output_reconstructs_the_same_headed_message(self):
+        frames = self.turn()
+        frames[-1] = self.frame({
+            "type": "response.completed", "response": {"id": "response", "output": []},
+        })
+        stream = self.relay(frames)
+        events = self.events(stream)
+        text = "".join(e["delta"] for e in events if e["type"] == "response.output_text.delta")
+        self.assertEqual(text, self.HEADER + "Bonjour à toi.")
+        response = jev.assemble_sse(stream.encode())
+        self.assertEqual(response["output"][0]["content"][0]["text"], text)
+
     def test_fragmented_utf8_stream_keeps_the_same_header_and_content(self):
         raw = b"".join(self.turn())
         chunks = [raw[i:i + 7] for i in range(0, len(raw), 7)]
