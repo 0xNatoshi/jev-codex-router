@@ -26,6 +26,18 @@ output plus an error flag into the Jev state, so Jev routes THIS step
 of re-judging the session's original prompt. On live sessions (7 days):
 ~92% of model calls are tool-steps — ~74% of the money weight.
 
+Input handling (v3): Jev sees the current ask, never the thread — the task is
+Codex's last user text, with Codex's own machine-generated envelopes stripped
+(goal context, plugin catalog, environment, skills) and clipped to the
+calibrated 500 chars as head+tail, because Codex appends the real tail after
+its own blocks. Thread length never reaches the judge: extract() keeps one tail
+item, the assistant side is bounded to 240 chars, and the only thread-sized
+number (n_items) stays in the local log instead of the Jev state.
+Live data (4 516 calls): 1 291 (29%) had sent Jev nothing but a
+`<codex_internal_context source="goal">` block (~6.4k chars, p50) and 23 more
+only a `<recommended_plugins>` catalog — the head-clip stopped inside the
+envelope, so the user's actual request was never judged.
+
 Fail-open: any Jev error → astra @medium. Kill switch: file
 ~/.codex/codex-router/jev-router.off → relay astra without a decision.
 Shadow: file ~/.codex/codex-router/jev-router.shadow → decide and log the
@@ -75,6 +87,14 @@ CALLER_SECRET_PATH = os.path.join(STATE, "caller-secret")
 OFF_PATH = os.path.join(STATE, "jev-router.off")
 SHADOW_PATH = os.path.join(STATE, "jev-router.shadow")
 DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
+# The routed model + thinking level, written where the Codex app really shows
+# it. The app collapses every turn's activity (thinking, commentary, tool calls)
+# behind its "worked for" divider and renders only the final answer as body
+# text, so a tag inside the thinking block stays invisible unless the divider is
+# expanded. With this file present, the same tag is appended to the visible
+# answer instead, and stripped back out of the answers replayed in later
+# requests -- the model must never read, copy or contradict its own signature.
+SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
@@ -421,8 +441,45 @@ def _content_text(content):
     return "\n".join(parts)
 
 
+def strip_envelopes(text):
+    """Codex's own wrapper blocks, out of the text the judge reads.
+
+    Whole blocks go: their bodies describe the harness, not the work, and they
+    are by far the longest part of a turn. When a turn holds nothing else, the
+    goal block's body is salvaged -- it carries the thread objective, and an
+    empty task would push the call onto the caller's fail-open path. A catalog-
+    or environment-only turn holds no request at all, so it keeps nothing.
+    """
+    if len(text) <= ENVELOPE_SCAN_CHARS:
+        scanned = text
+    else:
+        scanned = text[:ENVELOPE_SCAN_CHARS] + "\n" + text[-ENVELOPE_SCAN_CHARS:]
+    stripped = ENVELOPE_RX.sub("\n", scanned).strip()
+    if stripped:
+        return stripped
+    goal = GOAL_BODY_RX.search(scanned)
+    return goal.group(1).strip() if goal else ""
+
+
+def clip_task(text):
+    """Bound the task to Jev's calibrated budget, keeping head and tail."""
+    text = text.strip()
+    if len(text) <= TASK_CHARS:
+        return text
+    return text[:TASK_HEAD_CHARS] + TASK_CLIP_MARK + text[-TASK_TAIL_CHARS:]
+
+
+def task_for_jev(text):
+    """The current ask, out of Codex's envelopes, in <= TASK_CHARS characters.
+
+    Empty means the turn carried no request (a catalog- or environment-only
+    turn), which the caller reads as "no judgement to make here".
+    """
+    return clip_task(strip_envelopes(text))
+
+
 def extract(payload):
-    """Last user message + last assistant message + small stats."""
+    """Last user message (envelope-free, clipped) + last assistant message + small stats."""
     inp = payload.get("input")
     last_user = last_assistant = ""
     n_items = 0
@@ -546,17 +603,75 @@ TANDEM_GLYPHS = {
 }
 
 
+def route_label(model):
+    """(short name, glyph) of a routed call — the vocabulary of both tags."""
+    short, glyph = ROUTE_GLYPHS.get(model, (None, None))
+    if not short:
+        leaf = (model or "?").split("/")[-1]
+        short, glyph = TANDEM_GLYPHS.get(leaf, (leaf, "⚡"))
+    return short, glyph
+
+
 def route_marker(model, effort):
     """Visible tag for a routed call, separators on both sides: ' · 🧠sol:low · '.
 
     The client concatenates reasoning summary parts with no separator, so the
     tag has to carry its own trailing one (" · ") or it glues to the next part.
     """
-    short, glyph = ROUTE_GLYPHS.get(model, (None, None))
-    if not short:
-        leaf = (model or "?").split("/")[-1]
-        short, glyph = TANDEM_GLYPHS.get(leaf, (leaf, "⚡"))
+    short, glyph = route_label(model)
     return f" · {glyph} {short}" + (f":{effort}" if effort else "") + " · "
+
+
+def answer_signature(shown):
+    """Trailing line for the visible answer, or None while switched off.
+
+    The app renders the final answer as body text and everything else of the
+    turn behind a collapsed divider, so this is the one place a per-turn route
+    can be read without a click.
+    """
+    if not os.path.exists(SIGNATURE_PATH):
+        return None
+    short, glyph = route_label(shown.get("model"))
+    effort = shown.get("effort")
+    return f"\n\n— {glyph} {short}" + (f" · {effort}" if effort else "")
+
+
+# The signature as it reads in a replayed transcript. Anchored at the end on
+# purpose: only the trailing line this server wrote is removed, never prose that
+# happens to mention a model.
+SIGNATURE_RX = re.compile(
+    r"\s*\n*—\s+[^\s]+\s+[A-Za-z0-9._/-]+(?:\s+·\s+(?:low|medium|high|xhigh|max))?\s*$")
+
+
+def strip_signatures(payload):
+    """Drop our own answer signatures from the history sent upstream.
+
+    The signature is client-visible state, never model input: replayed, the
+    model would read the route it was served by and could echo a stale one into
+    a later answer. Only assistant bodies are touched, and only a trailing
+    signature is removed.
+    """
+    if not os.path.exists(SIGNATURE_PATH):
+        return 0
+    items = payload.get("input")
+    if not isinstance(items, list):
+        return 0
+    removed = 0
+    for item in items:
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            cleaned = SIGNATURE_RX.sub("", text)
+            if cleaned != text:
+                block["text"] = cleaned
+                removed += 1
+    return removed
 
 
 class SummaryMarker:
@@ -565,6 +680,12 @@ class SummaryMarker:
     The last delta of each summary part is held back by one event so the tag can
     be appended in place to it and to the matching done events: no fabricated
     events, no sequence-number surgery, byte-exact pass-through everywhere else.
+
+    Passed a ``signature`` (the switchable answer tag) it does the same for the
+    turn's final answer: the answer's deltas are held back one event so the last
+    one and the matching done/terminal events all end with the tag. The visible
+    answer is the only part of a turn the app renders without expanding its
+    activity divider, so that is where a route has to be written to be read.
 
     The same pass keeps a relayed stream's response id consistent. A Codex-dry
     call crosses the local edge, which encrypts response ids, so the terminal
@@ -576,12 +697,15 @@ class SummaryMarker:
     Only active for streamed responses.
     """
 
-    def __init__(self, marker):
+    def __init__(self, marker, signature=None):
         self.marker = marker
+        self.signature = signature or None
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._buf = ""
         self._block = []
         self._held = None  # (key, block_lines)
+        self._held_text = None  # (key, block_lines) — the answer's last delta
+        self._answer_item = None  # the item whose text is the visible answer
         self._response_id = None  # the id this stream's completion must repeat
 
     @staticmethod
@@ -617,6 +741,70 @@ class SummaryMarker:
             return value
         return value + self.marker
 
+    def _sign(self, value):
+        """Append the answer signature once — never onto an empty answer."""
+        if not self.signature or not isinstance(value, str) or not value.strip():
+            return value
+        if self.signature in value:
+            return value
+        return value + self.signature
+
+    def _sign_delta_block(self, block):
+        data = self._data(block)
+        if not isinstance(data, dict):
+            return block
+        data["delta"] = self._sign(data.get("delta"))
+        return self._rebuild(block, data)
+
+    def _sign_done_block(self, block):
+        data = self._data(block)
+        if not isinstance(data, dict):
+            return block
+        if "text" in data:
+            data["text"] = self._sign(data.get("text"))
+        return self._rebuild(block, data)
+
+    def _sign_message_item(self, item):
+        """Sign a finished assistant message — the turn's answer, never a note.
+
+        Only the item Codex marks `final_answer` is signed: commentary messages
+        and reasoning live behind the app's collapsed activity divider, and
+        signing them would only duplicate the tag into the replayed history.
+        """
+        if not self.signature or not isinstance(item, dict):
+            return
+        if item.get("type") != "message" or item.get("phase") != "final_answer":
+            return
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                part["text"] = self._sign(part["text"])
+
+    def _is_answer(self, item):
+        if not isinstance(item, dict) or item.get("type") != "message":
+            return False
+        return item.get("phase") == "final_answer" or (
+            self._answer_item is not None and item.get("id") == self._answer_item
+        )
+
+    def _flush_held(self, out, keep_text=False):
+        """Flush the held blocks untouched; the answer hold survives on request."""
+        if self._held is not None:
+            out.append(self._emit(self._held[1]))
+            self._held = None
+        if self._held_text is not None and not keep_text:
+            out.append(self._emit(self._held_text[1]))
+            self._held_text = None
+
+    def _flush_answer_hold(self, out, item_id):
+        """Flush the held answer delta, signed when it is the item's last one."""
+        if self._held_text is None:
+            return
+        held = self._held_text[1]
+        if self._held_text[0][0] == item_id:
+            held = self._sign_delta_block(held)
+        out.append(self._emit(held))
+        self._held_text = None
+
     def _tag_delta_block(self, block):
         data = self._data(block)
         if not isinstance(data, dict):
@@ -644,6 +832,7 @@ class SummaryMarker:
             for part in item.get("summary") or []:
                 if isinstance(part, dict) and "text" in part:
                     part["text"] = self._tag(part.get("text"))
+        self._sign_message_item(item)
         response = data.get("response")
         if isinstance(response, dict):
             for item in response.get("output") or []:
@@ -651,15 +840,14 @@ class SummaryMarker:
                     for part in item.get("summary") or []:
                         if isinstance(part, dict) and "text" in part:
                             part["text"] = self._tag(part.get("text"))
+                self._sign_message_item(item)
         return self._rebuild(block, data)
 
     def _process_block(self, block):
         out = []
         data = self._data(block)
         if not isinstance(data, dict):
-            if self._held is not None:
-                out.append(self._emit(self._held[1]))
-                self._held = None
+            self._flush_held(out)
             out.append(self._emit(block))
             return out
         dtype = data.get("type")
@@ -667,6 +855,26 @@ class SummaryMarker:
             response = data.get("response")
             if isinstance(response, dict) and isinstance(response.get("id"), str):
                 self._response_id = response["id"]
+        if dtype == "response.output_item.added":
+            item = data.get("item")
+            if self.signature and isinstance(item, dict) and item.get("phase") == "final_answer":
+                # Codex marks the item that becomes the visible answer here; the
+                # deltas of every other message (commentary) are left alone.
+                self._answer_item = item.get("id")
+        if dtype == "response.output_text.delta":
+            if self.signature and data.get("item_id") == self._answer_item and data.get("delta"):
+                self._flush_held(out, keep_text=True)
+                if self._held_text is not None:
+                    out.append(self._emit(self._held_text[1]))
+                key = (data.get("item_id"), data.get("content_index"))
+                self._held_text = (key, block)
+                return out
+        if dtype == "response.output_text.done":
+            if self.signature and data.get("item_id") == self._answer_item:
+                self._flush_held(out, keep_text=True)
+                self._flush_answer_hold(out, data.get("item_id"))
+                out.append(self._emit(self._sign_done_block(block)))
+                return out
         if dtype == "response.reasoning_summary_text.delta":
             if self._held is not None:
                 out.append(self._emit(self._held[1]))
@@ -704,6 +912,11 @@ class SummaryMarker:
                     self._held = None
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
+            if self.signature and self._is_answer(item):
+                self._flush_held(out, keep_text=True)
+                self._flush_answer_hold(out, item.get("id"))
+                out.append(self._emit(self._tag_item_block(block)))
+                return out
         if dtype in TERMINAL_EVENT_TYPES:
             response = data.get("response")
             if (
@@ -718,9 +931,7 @@ class SummaryMarker:
                 block = self._rebuild(block, data)
             out.append(self._emit(self._tag_item_block(block)))
             return out
-        if self._held is not None:
-            out.append(self._emit(self._held[1]))
-            self._held = None
+        self._flush_held(out)
         out.append(self._emit(block))
         return out
 
@@ -742,9 +953,7 @@ class SummaryMarker:
 
     def flush(self):
         out = []
-        if self._held is not None:
-            out.append(self._emit(self._held[1]))
-            self._held = None
+        self._flush_held(out)
         if self._block:
             out.append(self._emit(self._block))
             self._block = []
@@ -887,6 +1096,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "invalid json"}})
         if not isinstance(payload, dict):
             return self._json(400, {"error": {"message": "json object expected"}})
+        # Our own answer signatures never travel back upstream (see
+        # strip_signatures): the model must not read its own route tag.
+        stripped = strip_signatures(payload)
 
         t0 = time.time()
         debug = os.path.exists(DEBUG_PATH)
@@ -954,6 +1166,7 @@ class Handler(BaseHTTPRequestHandler):
 
         shown = would if would else {"model": model, "effort": effort}
         marker = route_marker(shown["model"], shown["effort"])
+        signature = answer_signature(shown)
 
         def apply_route(payload, model, effort, speed):
             payload["model"] = model
@@ -973,7 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
 
         out_path = path if path.startswith("/v1") else "/v1" + path
         status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
-            payload, out_path, stream_requested, debug, marker, model)
+            payload, out_path, stream_requested, debug, marker, model, signature)
         retried = False
         fallback = None
         if quota_hit and not dry_reason:
@@ -991,8 +1204,9 @@ class Handler(BaseHTTPRequestHandler):
             dry_reason = "quota"
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
+            signature = answer_signature({"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model)
+                payload, out_path, stream_requested, debug, marker, model, signature)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
@@ -1008,8 +1222,9 @@ class Handler(BaseHTTPRequestHandler):
             apply_route(payload, model, effort, None)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
+            signature = answer_signature({"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model)
+                payload, out_path, stream_requested, debug, marker, model, signature)
         if unwritten is not None:
             # Every model that could have served this turn refused it, and the
             # refusal was held back only because another attempt might have
@@ -1045,11 +1260,12 @@ class Handler(BaseHTTPRequestHandler):
             "step": step["step_type"],
             "errored": step["errored"],
             "digest_len": len(step["digest"]),
+            "stripped": stripped,
             "would": would,
             "task": task[:110],
         })
 
-    def _forward(self, payload, out_path, stream_requested, debug, marker, model):
+    def _forward(self, payload, out_path, stream_requested, debug, marker, model, signature=None):
         """One relay attempt to the local caller edge, streamed straight back.
 
         Returns (status, out_kind, ctype, quota_hit, unwritten, resets_at).
@@ -1096,7 +1312,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                markerer = SummaryMarker(marker)
+                markerer = SummaryMarker(marker, signature)
                 while True:
                     chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
                     if not chunk:
