@@ -191,21 +191,21 @@ class TandemRetry(unittest.TestCase):
 
 
 class Policy(unittest.TestCase):
-    def test_a_low_confidence_user_turn_is_held_to_the_middle_tier(self):
+    def test_a_low_confidence_user_turn_keeps_the_jev_choice(self):
         model, effort, speed, gate = jev.route(jev.LUNA, "low", 0.1, {"step_type": "user_turn"})
-        self.assertEqual((model, effort, speed, gate), (jev.SOL, "low", "default", "hold(sol)"))
+        self.assertEqual((model, effort, speed, gate), (jev.LUNA, "low", "default", "apply"))
 
-    def test_a_clean_mechanical_step_keeps_luna_on_the_fast_lane(self):
+    def test_a_clean_mechanical_step_keeps_luna_and_its_decided_depth(self):
         model, effort, speed, gate = jev.route(jev.LUNA, "low", 0.1, {"step_type": "tool_step"})
-        self.assertEqual((model, effort, speed, gate), (jev.LUNA, "max", "priority", "hold(luna_step)"))
+        self.assertEqual((model, effort, speed, gate), (jev.LUNA, "low", "default", "apply"))
 
     def test_a_confident_verdict_is_applied_as_given(self):
         model, effort, speed, gate = jev.route(jev.ASTRA, "max", 0.9, {"step_type": "user_turn"})
         self.assertEqual((model, effort, speed, gate), (jev.ASTRA, "max", "default", "apply"))
 
-    def test_an_unknown_depth_is_clamped_to_the_documented_default(self):
-        _model, effort, _speed, _gate = jev.route(jev.SOL, "nonsense", 0.9, {"step_type": "user_turn"})
-        self.assertEqual(effort, "medium")
+    def test_an_invalid_depth_does_not_silently_change_the_jev_choice(self):
+        with self.assertRaises(ValueError):
+            jev.route(jev.SOL, "nonsense", 0.9, {"step_type": "user_turn"})
 
 
 class JevTaskInput(unittest.TestCase):
@@ -282,7 +282,17 @@ class JevTaskInput(unittest.TestCase):
         tail = state["step"]["last_tool_output_tail"]
         self.assertEqual(state["step"]["type"], "tool_step")
         self.assertEqual(len(tail), jev.DIGEST_CHARS)
-        self.assertFalse(state["step"]["contains_error"])
+        self.assertNotIn("contains_error", state["step"])
+
+    def test_the_tool_name_is_linked_by_call_id_without_sending_arguments(self):
+        state = self.state([
+            self.user_item(self.ASK),
+            {"type": "function_call", "call_id": "call_1",
+             "name": "exec_command", "arguments": "private arguments"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+        ])
+        self.assertEqual(state["step"]["tool_call"], {"name": "exec_command"})
+        self.assertNotIn("private arguments", json.dumps(state))
 
     def test_the_assistant_side_is_bounded(self):
         assistant = {"type": "message", "role": "assistant",

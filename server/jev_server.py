@@ -7,21 +7,14 @@ and a thinking depth, applies the routing policy, then relays to the Codex
 Router's local caller edge (native session sharing enabled) — with no format
 conversion: Responses in, Responses out, SSE relayed verbatim.
 
-Default routing policy:
-  luna  → always max thinking + priority speed (the 2x cost is negligible)
-  sol   → adaptive thinking depth (Jev) + standard speed
-  astra → adaptive thinking depth (Jev) + standard speed
-  conf < 0.5 → HOLD: middle tier (sol) — anti-downgrade without burning the
-  frontier (backtest-calibrated: −12% → −60% vs full-Astra) — with ONE
-  measured exception: a clean mechanical continuation (tool step, no error,
-  shallow depth) that Jev itself wanted on luna keeps luna on the fast lane.
-  Live data (1 day, 1 065 calls): without it, 59% of calls were held to sol,
-  including 173/day of luna-on-mechanics picks that luna could serve at
-  ~1/10th of sol's rates.
+Routing policy: Jev chooses one (model, thinking effort) pair for every call.
+Every pair uses standard speed. Confidence is logged without changing the chosen
+model. There are no keyword/scenario overrides or target model proportions.
+Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
 Per-call awareness (v2): every request is classified as a fresh user turn, a
 tool-step continuation, or other. Tool-steps carry a digest of the last tool
-output plus an error flag into the Jev state, so Jev routes THIS step
+output and its tool name into the Jev state, so Jev routes THIS step
 (mechanical continuation, standard next action, or frontier-worthy) instead
 of re-judging the session's original prompt. On live sessions (7 days):
 ~92% of model calls are tool-steps — ~74% of the money weight.
@@ -52,9 +45,8 @@ re-encrypted id, and the Responses consumer in front of us refuses a completion
 whose id differs from the one `response.created` announced.
 Non-stream callers (auto-compaction checkpoints, litellm non-stream path)
 receive the SSE stream reassembled into a single JSON response object.
-Balance: quality-first. sol is the default workhorse, astra is reserved for
-genuinely hard steps, luna only fires on confident mechanical calls, and
-compaction checkpoints are pinned to sol @ high.
+Balance: sufficient capability and effort for the next decision, including
+compaction. Capability profiles are priors; outcome quality requires evaluation.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 
 Codex-dry tandem: when native usage is exhausted — a manual flag file
@@ -80,6 +72,9 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL,
+                            TIERS, decision_from_answers, route)
+
 HOME = os.path.expanduser("~")
 STATE = os.path.join(HOME, ".codex", "codex-router")
 ENV_PATH = os.path.join(HOME, ".hermes", ".env")
@@ -101,7 +96,7 @@ LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.0"
+VERSION = "1.1"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -122,11 +117,6 @@ ASK_MAX_STATE_CHARS = 120_000
 ASK_MAX_QUESTIONS = 40
 ASK_TIMEOUT = 15.0
 ASK_TYPES = ("noul", "choice", "score")
-
-LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
-TIERS = (LUNA, SOL, ASTRA)
-EFFORTS = ["low", "medium", "high", "xhigh", "max"]
-CONF_GATE = 0.5
 
 # Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
 GO_STANDARD = "deepseek/deepseek-v4.1-flash"
@@ -201,49 +191,6 @@ GOAL_BODY_RX = re.compile(
 # A single envelope has been seen at 950k chars. Past this size only the two ends
 # are scanned, which is where the user's text sits anyway.
 ENVELOPE_SCAN_CHARS = 200_000
-
-QUESTIONS = {
-    "tier": {
-        "type": "choice",
-        "instructions": (
-            "Which model tier should serve this model call? This is one call inside an ongoing "
-            "coding-agent session. When the call directly follows a tool result, route THIS next "
-            "step only: mechanical continuations (running or re-running commands, applying a "
-            "prepared edit, checking output, routine file reads) are fine on gpt-5.6-luna; "
-            "standard next actions belong to gpt-5.6-sol; reserve gpt-6-astra for steps that need "
-            "frontier reasoning (complex debugging after failures, architecture, ambiguous or "
-            "risky changes). When the call starts a fresh user turn, route the task itself. "
-            "COST: gpt-5.6-luna costs about FIVE TIMES LESS than gpt-5.6-sol, so lean luna by "
-            "default and escalate only when the work genuinely needs more. Anything simple — a "
-            "greeting, a short answer, a one-line question, a quick lookup, a short summary, a "
-            "small scoped edit — belongs to luna; choose sol only for real standard implementation "
-            "work, and astra only for the frontier cases above."
-        ),
-        "criteria": {
-            LUNA: "Fast and cheap (about 5x cheaper than sol): greetings, short answers, simple "
-                  "questions, lookups, short summaries, clearly scoped or mechanical work — the "
-                  "default for anything simple.",
-            SOL: "Workhorse; standard implementation work that needs more than a quick answer.",
-            ASTRA: "Frontier; hard, ambiguous, or risky problems.",
-        },
-    },
-    "depth": {
-        "type": "choice",
-        "instructions": (
-            "What thinking depth does the next step require (for a fresh user turn, the task "
-            "itself)? Set the thinking effort level: low = "
-            "straightforward, no deep reasoning; medium = some careful thought; high = substantial "
-            "reasoning; xhigh = very deep reasoning; max = maximum depth for the hardest problems."
-        ),
-        "criteria": {
-            "low": "No deep reasoning needed.",
-            "medium": "Some careful thought.",
-            "high": "Substantial reasoning required.",
-            "xhigh": "Very deep reasoning.",
-            "max": "Maximum reasoning depth, hardest problems.",
-        },
-    },
-}
 
 _log_lock = threading.Lock()
 
@@ -430,12 +377,8 @@ def _typesafe_answers(answers):
         if isinstance(answer, dict) and answer.get("type") == "boolean":
             out[name] = {"type": "noul", "noul": answer.get("probability", answer.get("noul"))}
         elif isinstance(answer, dict) and answer.get("type") == "choice":
-            if "confidence" not in answer and isinstance(answer.get("probabilities"), dict):
-                probs = answer["probabilities"]
-                conf = probs.get(answer.get("choice"))
-                if not isinstance(conf, (int, float)) and probs:
-                    conf = max(probs.values())
-                answer = dict(answer, confidence=conf)
+            # A winning probability is not TypeSafe's distribution confidence.
+            # Preserve the provider value; leave it absent when not supplied.
             out[name] = answer
         else:
             out[name] = answer
@@ -523,38 +466,6 @@ def validate_ask(body):
         if qtype == "score" and not isinstance(criteria, list):
             return None, None, f"question {name} needs a criteria list"
     return state, questions, None
-
-
-def clamp_effort(depth):
-    return depth if depth in EFFORTS else "medium"
-
-
-def route(tier, depth, conf, step=None):
-    """Apply the routing policy. Returns (model, effort, speed, gate).
-
-    Below the confidence gate the middle tier is the safe default, with one
-    measured exception: a clean mechanical continuation (tool step, no error,
-    shallow depth) that Jev itself wanted on luna keeps luna — that is the
-    tier's stated job, and luna runs on the priority fast lane at ~1/10th of
-    sol's rates.
-    """
-    if conf is not None and conf < CONF_GATE:
-        # Backtest finding: falling back to astra ate ~80% of the savings;
-        # the middle tier keeps the anti-downgrade property without burning the frontier.
-        if (
-            tier == LUNA
-            and isinstance(step, dict)
-            and step.get("step_type") == "tool_step"
-            and not step.get("errored")
-            and (depth or "low") in ("low", "medium")
-        ):
-            return LUNA, "max", "priority", "hold(luna_step)"
-        return SOL, clamp_effort(depth), "default", "hold(sol)"
-    if tier == LUNA:
-        return LUNA, "max", "priority", "apply"
-    if tier == SOL:
-        return SOL, clamp_effort(depth), "default", "apply"
-    return ASTRA, clamp_effort(depth), "default", "apply"
 
 
 def _content_text(content):
@@ -688,6 +599,13 @@ def classify(payload):
             detail["step_type"] = "tool_step"
             detail["digest"] = text.strip()[-DIGEST_CHARS:] if text else ""
             detail["errored"] = bool(ERROR_RX.search(text[-4000:]))
+            call_id = last.get("call_id")
+            if call_id:
+                for item in reversed(inp[:-1]):
+                    if (isinstance(item, dict) and item.get("call_id") == call_id
+                            and item.get("type") in ("function_call", "custom_tool_call")):
+                        detail["tool_call"] = {"name": str(item.get("name") or "")[:160]}
+                        break
         elif last.get("role") == "user":
             detail["step_type"] = "user_turn"
     return detail
@@ -711,7 +629,8 @@ def jev_state(task, prev_assistant, signals, step):
         state["previous_assistant"] = prev_assistant[-240:]
     if step["step_type"] == "tool_step":
         state["step"]["last_tool_output_tail"] = step["digest"]
-        state["step"]["contains_error"] = step["errored"]
+        if step.get("tool_call"):
+            state["step"]["tool_call"] = step["tool_call"]
     return state
 
 
@@ -744,7 +663,7 @@ def _debug_shape(payload):
 
 
 ROUTE_GLYPHS = {
-    "gpt-5.6-luna": ("luna", "⚡"),      # fast lane, max thinking
+    "gpt-5.6-luna": ("luna", "⚡"),      # cheap tier, adaptive thinking
     "gpt-5.6-sol": ("sol", "🧠"),        # reasoning workhorse
     "gpt-6-astra": ("astra", "🚀"),      # frontier
     "gpt-5.6-terra": ("terra", "🌍"),
@@ -826,6 +745,25 @@ def strip_signatures(payload):
     return removed
 
 
+def usage_counts(usage):
+    """Allowlist token counters; absent usage stays unknown, never zero."""
+    if not isinstance(usage, dict):
+        return None
+    out = {}
+    for name in ("input_tokens", "output_tokens", "total_tokens",
+                 "cache_write_input_tokens"):
+        value = usage.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[name] = value
+    for group, name in (("input_tokens_details", "cached_tokens"),
+                        ("output_tokens_details", "reasoning_tokens")):
+        details = usage.get(group)
+        value = details.get(name) if isinstance(details, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out["cached_input_tokens" if name == "cached_tokens" else name] = value
+    return out or None
+
+
 class SummaryMarker:
     """Append the routed tag to reasoning summaries (the thread's thinking blocks).
 
@@ -859,6 +797,8 @@ class SummaryMarker:
         self._held_text = None  # (key, block_lines) — the answer's last delta
         self._answer_item = None  # the item whose text is the visible answer
         self._response_id = None  # the id this stream's completion must repeat
+        self.usage = None
+        self.terminal_type = None
 
     @staticmethod
     def _emit(lines):
@@ -1071,6 +1011,8 @@ class SummaryMarker:
                 return out
         if dtype in TERMINAL_EVENT_TYPES:
             response = data.get("response")
+            self.terminal_type = dtype
+            self.usage = usage_counts(response.get("usage")) if isinstance(response, dict) else None
             if (
                 self._response_id
                 and isinstance(response, dict)
@@ -1156,7 +1098,7 @@ def log_line(record):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "jev-router/1.0"
+    server_version = "jev-router/1.1"
 
     def log_message(self, *args):
         pass
@@ -1218,7 +1160,8 @@ class Handler(BaseHTTPRequestHandler):
                 }],
             })
         elif path in ("/health", ""):
-            self._json(200, {"ok": True, "service": "jev-router", "version": VERSION})
+            self._json(200, {"ok": True, "service": "jev-router", "version": VERSION,
+                             "policy_version": POLICY_VERSION})
         else:
             self._json(404, {"error": {"message": "not found"}})
 
@@ -1268,27 +1211,27 @@ class Handler(BaseHTTPRequestHandler):
 
         tier = depth = conf = None
         jev_ms = None
+        decision = None
+        jev_usage = None
         if os.path.exists(OFF_PATH):
-            model, effort, speed, gate = ASTRA, None, None, "off"
-        elif task.lstrip().startswith("You are creating a lossy continuation checkpoint"):
-            # Quality first: the checkpoint defines the continuation context, so
-            # compaction calls are pinned instead of left to the per-call judge.
-            model, effort, speed, gate = SOL, "high", "default", "compaction"
+            model, effort, speed, gate = ASTRA, None, "default", "off"
         else:
             key = load_key()
-            if key and task:
+            if key and (task or step.get("digest") or signals.get("has_image")):
                 jt0 = time.time()
                 state = jev_state(task, prev_assistant, signals, step)
                 try:
-                    answer = (call_jev_routed(key, state).get("answers") or {})
-                    tier_ans = answer.get("tier") or {}
-                    tier = tier_ans.get("choice") if tier_ans.get("choice") in TIERS else None
-                    conf = tier_ans.get("confidence")
-                    if not isinstance(conf, (int, float)):
-                        conf = None
-                    depth_ans = answer.get("depth") or {}
-                    depth = depth_ans.get("choice")
-                    model, effort, speed, gate = route(tier, depth, conf, step)
+                    result = call_jev_routed(key, state)
+                    decision = decision_from_answers(result.get("answers"))
+                    raw_usage = result.get("usage") or {}
+                    if not isinstance(raw_usage, dict):
+                        raw_usage = {}
+                    jev_usage = {k: v for k, v in raw_usage.items()
+                                 if k in ("input_tokens", "output_tokens", "inputTokens", "outputTokens")
+                                 and isinstance(v, int) and not isinstance(v, bool) and v >= 0}
+                    tier, depth, conf = (decision["model"], decision["effort"],
+                                         decision["confidence"])
+                    model, effort, speed, gate = route(tier, depth)
                 except Exception as exc:
                     model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
                 jev_ms = int((time.time() - jt0) * 1000)
@@ -1298,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
         would = None
         if os.path.exists(SHADOW_PATH):
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
-            model, effort, speed, gate = ASTRA, None, None, "shadow(astra)"
+            model, effort, speed, gate = ASTRA, None, "default", "shadow(astra)"
 
         # Codex-dry tandem: ONLY while native usage is exhausted (manual flag or
         # observed quota failure) the triptych is replaced — GLM for frontier
@@ -1307,30 +1250,30 @@ class Handler(BaseHTTPRequestHandler):
         native_model = model
         if dry_reason and model in TIERS:
             model, effort = dry_target(native_model, effort)
-            speed = None
+            speed = "default"
             gate = f"codex_dry({dry_reason}):{native_model}"
 
         shown = would if would else {"model": model, "effort": effort}
         marker = route_marker(shown["model"], shown["effort"])
         signature = answer_signature(shown)
 
-        def apply_route(payload, model, effort, speed):
+        def apply_route(payload, model, effort):
             payload["model"] = model
             if effort:
                 reasoning = payload.get("reasoning")
                 reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
                 reasoning["effort"] = effort
                 payload["reasoning"] = reasoning
-            if speed:
-                payload["service_tier"] = speed
-            else:
-                payload.pop("service_tier", None)
+            # Explicitly override any Fast preference inherited from the client,
+            # including kill-switch, shadow, and retried fallback requests.
+            payload["service_tier"] = "default"
             payload["stream"] = True  # the local caller edge requires streaming
             return payload
 
-        apply_route(payload, model, effort, speed)
+        apply_route(payload, model, effort)
 
         out_path = path if path.startswith("/v1") else "/v1" + path
+        self._attempts = []
         status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
             payload, out_path, stream_requested, debug, marker, model, signature)
         retried = False
@@ -1342,7 +1285,7 @@ class Handler(BaseHTTPRequestHandler):
             # after the reset is served by the native triptych again.
             mark_native_dry("quota", resets_at=resets_at)
             model, effort = dry_target(native_model, effort)
-            apply_route(payload, model, effort, None)
+            apply_route(payload, model, effort)
             retried = True
             # The log records the state this call entered, not the one it started
             # in: reading `dry: None` next to `codex_dry(retry)` is how a flip
@@ -1365,7 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
             # live session on 18 September 2026 after the handoff.
             fallback = other_tandem(model)
             model, effort = fallback, tandem_effort(effort, native_model)
-            apply_route(payload, model, effort, None)
+            apply_route(payload, model, effort)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
             signature = answer_signature({"model": model, "effort": effort})
@@ -1384,6 +1327,11 @@ class Handler(BaseHTTPRequestHandler):
 
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "policy_version": POLICY_VERSION,
+            "route_probabilities": decision["probabilities"] if decision else None,
+            "chosen_probability": decision["chosen_probability"] if decision else None,
+            "jev_usage": jev_usage,
+            "attempts": self._attempts,
             "gate": gate,
             "tier": tier,
             "conf": conf,
@@ -1429,6 +1377,11 @@ class Handler(BaseHTTPRequestHandler):
         status = 0
         out_kind = ""
         ctype = ""
+        attempt = {"model": model, "effort": (payload.get("reasoning") or {}).get("effort"),
+                   "speed": payload.get("service_tier"), "status": None,
+                   "terminal_type": None, "usage": None}
+        self._attempts.append(attempt)
+        markerer = None
         try:
             conn.request(
                 "POST",
@@ -1498,6 +1451,10 @@ class Handler(BaseHTTPRequestHandler):
                 if status == 200 and (head.startswith(b"event:") or head.startswith(b"data:")):
                     assembled = assemble_sse(data)
                     if assembled is not None:
+                        attempt["usage"] = usage_counts(assembled.get("usage"))
+                        response_status = assembled.get("status")
+                        if response_status in ("completed", "incomplete", "failed"):
+                            attempt["terminal_type"] = f"response.{response_status}"
                         data = json.dumps(assembled).encode("utf-8")
                         out_ctype = "application/json"
                 self.send_response(status)
@@ -1507,6 +1464,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             return status, out_kind, ctype, False, None, None
         finally:
+            attempt["status"] = status
+            if markerer is not None:
+                attempt["usage"] = markerer.usage
+                attempt["terminal_type"] = markerer.terminal_type
             conn.close()
 
 

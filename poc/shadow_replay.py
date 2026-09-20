@@ -5,7 +5,7 @@
   (attachments, short follow-up), on top of the request text.
 - Deduplicates via shadow-log.jsonl → daily runs only add what's new.
 - --quiet: a single summary line (for cron).
-- Confidence gate: conf < 0.5 → "hold" (no downgrade), otherwise "apply".
+- Same joint model/effort decision as production; confidence is diagnostic.
 
 No impact on the router: read-only + Jev calls. Real routing is untouched.
 
@@ -30,7 +30,6 @@ _jspec.loader.exec_module(jev)
 SESS_ROOT = os.path.expanduser("~/.codex/sessions")
 DEFAULT_LOG = os.path.join(HERE, "..", "shadow-log.jsonl")
 TAG_CLEAN = re.compile(r"<[^>]+>")
-CONF_GATE = 0.5
 
 
 def recent_session_files(days):
@@ -116,6 +115,8 @@ def load_seen(log_path):
                 d = json.loads(line)
             except Exception:
                 continue
+            if d.get("policy_version") != poc.POLICY_VERSION:
+                continue
             k = (d.get("task") or "")[:80].lower()
             if k:
                 seen.add(k)
@@ -191,24 +192,21 @@ def main():
                 resp = poc.post_json("https://api.typesafe.ai/v1/systemone", key,
                                      {"model": "jev-latest", "state": state, "questions": q})
                 ans = resp.get("answers", {})
-                tier = poc.validate_choice(ans.get("tier", {}), set(poc.CANDIDATES))
-                d = (ans.get("depth") or {}).get("choice") or "medium"
-                model, effort, speed = poc.route_for(tier["choice"], d)
-                gate = "apply" if tier["confidence"] >= CONF_GATE else "hold"
-                if gate == "hold":
-                    holds += 1
+                decision = poc.decision_from_answers(ans)
+                model, effort, speed = decision["model"], decision["effort"], decision["speed"]
+                conf, gate = decision["confidence"], decision["gate"]
                 n_tok += (resp.get("usage", {}) or {}).get("input_tokens", 0) or 0
-                rec = {"at": ts, "state_v": 2, "session": os.path.basename(path),
+                rec = {"at": ts, "state_v": 3, "policy_version": poc.POLICY_VERSION, "session": os.path.basename(path),
                        "task": turn["ask"][:140], "project": state["signals"].get("project"),
-                       "tier": tier["choice"], "tier_conf": round(tier["confidence"], 3),
-                       "depth": d, "gate": gate,
+                       "tier": model, "tier_conf": conf,
+                       "depth": effort, "gate": gate,
                        "route": {"model": model, "effort": effort, "speed": speed},
                        "decide_ms": round((time.perf_counter() - t0) * 1000)}
                 logf.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 logf.flush()
                 dist[model] = dist.get(model, 0) + 1
                 if not args.quiet:
-                    print(f"#{i:>2}  {tier['choice']:<14} conf={tier['confidence']:.2f} [{gate}] depth={d:<7} -> @{effort} [{speed}]  |  {turn['ask'][:52]}…")
+                    print(f"#{i:>2}  {model:<14} conf={conf} [{gate}] -> @{effort} [{speed}]  |  {turn['ask'][:52]}…")
             except Exception as e:
                 errors += 1
                 if not args.quiet:

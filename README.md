@@ -4,12 +4,13 @@
 
 **Per-turn model routing for Codex, driven by [Jev](https://docs.typesafe.ai) (TypeSafe System One).**
 
-Every turn is classified by Jev and served by the cheapest model that can handle
-it, at a thinking depth adapted to the task — instead of running everything on
-the frontier model. The decision costs ≈ $0.00003 and ≈ 0.6 s per turn.
+Jev chooses a model and thinking effort together for each model call, including
+continuations after tools. Every route uses standard speed. The objective is
+sufficient capability for the next decision with no unnecessary quota consumption.
 
-**Measured savings: ≈ −60 % vs a full-frontier baseline** on a 7-day replay of
-237 real turns — protocol, tables and limitations in [BACKTEST.md](BACKTEST.md).
+**Historical simulation: ≈ −60 % vs full Astra** on 237 turns under the old
+policy. This is not measured Codex quota saved, nor evidence for the current
+policy — protocol and limitations in [BACKTEST.md](BACKTEST.md).
 Installing with an AI agent? Hand it [AGENTS.md](AGENTS.md).
 
 This is not a fork of any router: it plugs into an existing local
@@ -50,22 +51,26 @@ Codex ──▶ Codex Router (:4202)
 
 ## Routing policy
 
-| Tier | Model | Thinking | Speed |
-|---|---|---|---|
-| Mechanical / clearly scoped | `gpt-5.6-luna` | **always max** | `priority` (fast lane; cheap enough that 2× is negligible) |
-| Standard implementation | `gpt-5.6-sol` | adaptive (Jev depth) | standard |
-| Hard / ambiguous | `gpt-6-astra` | adaptive (Jev depth) | standard |
+The shared contract in `server/routing_policy.py` gives Jev 15 explicit pairs:
+Luna, Sol or Astra × low, medium, high, xhigh or max thinking. Jev chooses the
+pair in one Choice question, using capability profiles and the current request,
+recent assistant intent, and the available tool result. Every pair uses standard
+speed, overriding an incoming Fast setting, including retries and bypass modes.
 
-When Jev's confidence is below the gate (`0.5`, tunable), the router **does not
-downgrade**: the turn falls back to the **middle tier** (Sol) and the decision
-is logged — a backtest over real sessions showed that falling back to the
-frontier model instead eats ~80% of the savings (see `poc/BACKTEST.md`).
+There is no preferred model, target distribution, keyword-to-model rule,
+low-confidence fallback to Sol, mechanical-step exception, or compaction pin.
+A valid decision is applied unchanged even when several pairs are close. Jev's
+confidence and full choice distribution are logged separately; neither is a
+measured probability that the selected model will successfully finish the task.
+The gateway's winning probability is never relabelled as TypeSafe confidence.
 
-One measured exception: a **clean mechanical continuation** (tool step, no
-error, low/medium depth) that Jev wanted on **Luna** keeps Luna on the priority
-lane. Live data (1 day, 1 065 calls) showed 59% of calls were otherwise held to
-Sol, including ~173/day of Luna-on-mechanics picks (~10× cheaper on Luna) —
-those now log as `hold(luna_step)`.
+The model descriptions are capability priors, not calibrated success rates.
+The policy must be evaluated on completed tasks, corrections, tokens and quota,
+not on a desired share of Luna calls or artificially high confidence. Schema
+checks and synthetic routing samples establish wiring, not equal-quality savings.
+A missing/invalid Jev response or a provider error still uses the separately
+logged technical fail-open route (Astra at medium); the manual kill switch and
+native-quota exhaustion are operational bypasses, not Jev decisions.
 
 ### Codex-dry tandem — only while native usage is exhausted
 
@@ -121,15 +126,19 @@ median latency (end-to-end and Jev's own decision time), and an estimate of the
 real cost against two counterfactuals — every turn on `gpt-6-astra`, and every
 turn on `gpt-5.6-sol`.
 
-The live log carries no token counts, so the cost block works in **relative
-units, one unit = one luna turn**: published list rates (the same table as
-`poc/backtest_savings.py`) applied to the token mix measured in `BACKTEST.md`,
-with luna priced in Fast mode (×2, the policy always runs it at max on the
-priority lane). Units per turn are printed by the report — on the current rates
-luna 1.00 · sol 9.82 · astra 24.54 — and the mix is one constant to change. When
-`~/.codex/codex-router/jev-backtest.json` exists, the report echoes its
-**measured USD** figures alongside, which come from real per-turn token usage
-(`poc/backtest_savings.py`, see `BACKTEST.md`).
+New log entries record a versioned decision and each upstream attempt's model,
+effort, standard speed, terminal event and token usage when the provider reports
+it. Only numeric usage counters are retained. Unknown usage is not counted as
+zero, retries are retained, and reasoning tokens are already included in output.
+The report estimates standard ChatGPT credits from these observed tokens against
+all-Sol and all-Astra counterfactuals. External fallback calls are excluded from
+that comparison. These are published-rate estimates, not observed account debits;
+counterfactual token volumes and task quality have not been experimentally measured.
+
+Historical entries without usage keep a separate fixed-volume API-rate proxy.
+Their logged Fast speed retains its surcharge instead of being repriced by the
+new policy. The old backtest is clearly labelled as a simulation. Current replay
+scripts share the live decision contract and reject a cache from another policy.
 
 ## Ask surface (`POST /ask`)
 
@@ -253,7 +262,7 @@ stops answering.
 | Action | Command |
 |---|---|
 | Watch decisions | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
-| See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (fast) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
+| See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug capture (shapes + raw streams) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
@@ -293,9 +302,8 @@ curl -s http://127.0.0.1:4319/health
 
 ## Status
 
-Early, but running in production on the author's setup. The routing policy and
-the confidence gate are expected to be calibrated with real usage — the local
-decision log is the calibration source.
+Early, but running in production on the author's setup. The joint routing policy needs outcome calibration on real usage; the local
+decision and attempt logs provide observations, not quality labels.
 
 ## License
 

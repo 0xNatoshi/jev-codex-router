@@ -152,7 +152,7 @@ class AskEndpointTests(unittest.TestCase):
             }
 
         with mock.patch.object(jev_server, "load_key", return_value="test-key"), \
-             mock.patch.object(jev_server, "call_jev", side_effect=fake_call_jev):
+             mock.patch.object(jev_server, "call_jev_routed", side_effect=fake_call_jev):
             status, payload = self.post(body)
 
         self.assertEqual(status, 200)
@@ -165,7 +165,7 @@ class AskEndpointTests(unittest.TestCase):
 
     def test_serves_both_the_plain_and_versioned_path(self):
         with mock.patch.object(jev_server, "load_key", return_value="k"), \
-             mock.patch.object(jev_server, "call_jev", return_value={"answers": {}}):
+             mock.patch.object(jev_server, "call_jev_routed", return_value={"answers": {}}):
             for path in ("/ask", "/v1/ask"):
                 with self.subTest(path):
                     status, _ = self.post(
@@ -188,7 +188,7 @@ class AskEndpointTests(unittest.TestCase):
 
     def test_answers_502_when_jev_fails(self):
         with mock.patch.object(jev_server, "load_key", return_value="k"), \
-             mock.patch.object(jev_server, "call_jev", side_effect=RuntimeError("boom")):
+             mock.patch.object(jev_server, "call_jev_routed", side_effect=RuntimeError("boom")):
             status, payload = self.failed_post(
                 {"state": "s", "questions": {"q": {"type": "noul", "instructions": "x"}}}
             )

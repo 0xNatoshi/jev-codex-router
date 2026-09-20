@@ -2,71 +2,31 @@
 """Jev Codex Router — POC (default routing policy).
 
 Default routing policy:
-  luna  -> ALWAYS max thinking + priority speed (2x cost is negligible)
+  luna  -> adaptive thinking (per task) + default speed
   sol   -> adaptive thinking (per task) + default speed
   astra -> adaptive thinking (per task) + default speed
 
 Usage: python3 route_poc.py [--dry] [--tasks tasks.json] [--model jev-latest]
 Key lookup: $TYPESAFE_API_KEY, then ~/.hermes/.env, then ~/.jev.env.
 """
-import argparse, json, math, os, sys, time, urllib.error, urllib.request
+import argparse, json, os, sys, time, urllib.error, urllib.request
 
 API = "https://api.typesafe.ai/v1/systemone"
 
-CANDIDATES = {
-    "gpt-5.6-luna": "Cheap quick tier. Always runs at MAXIMUM thinking with fast mode (priority). Use for mechanical or clearly scoped tasks: renames, formatting, small edits, lookups, simple explanations.",
-    "gpt-5.6-sol": "Workhorse. Standard implementation, tests, refactors, multi-file changes with clear requirements. Thinking depth adapts to the task.",
-    "gpt-6-astra": "Frontier reasoning. Hard debugging, race conditions, architecture, security review, ambiguous failures. Thinking depth adapts to the task.",
-}
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server"))
+from routing_policy import (MODEL_PROFILES, POLICY_VERSION, QUESTIONS,
+                            decision_from_answers, route)
 
-DEPTH_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+CANDIDATES = MODEL_PROFILES
 
-# --- default routing policy ---
-SPEED_TIER_MODEL = "gpt-5.6-luna"          # speed=priority is reserved for Luna
-LUNA_EFFORT = "max"                        # Luna always runs max thinking
-SOL_LEVELS = ["low", "medium", "high", "xhigh", "max"]
-ASTRA_LEVELS = ["medium", "high", "xhigh", "max"]
-
-def clamp(level, allowed):
-    if level in allowed:
-        return level
-    if level is None:
-        level = "medium"
-    target = DEPTH_LEVELS.index(level) if level in DEPTH_LEVELS else 1
-    return min(allowed, key=lambda l: abs(DEPTH_LEVELS.index(l) - target))
 
 def route_for(tier, depth):
-    """(model, effort, speed) per the routing policy."""
-    if tier == SPEED_TIER_MODEL:
-        return tier, LUNA_EFFORT, "priority"
-    if tier == "gpt-5.6-sol":
-        return tier, clamp(depth, SOL_LEVELS), "default"
-    return tier, clamp(depth, ASTRA_LEVELS), "default"
+    return route(tier, depth)[:3]
+
 
 def questions():
-    return {
-        "tier": {
-            "type": "choice",
-            "instructions": {
-                "question": "Which model tier should handle this coding task?",
-                "goal": "Route a Codex coding task to the cheapest model that can reliably complete it in one or two attempts.",
-                "inputs": "`task` is the user's request. `signals` are computed features.",
-                "rules": "Prefer luna for mechanical or clearly scoped tasks. Use sol for standard implementation work. Reserve astra for deep reasoning, hard debugging, architecture, or security judgment. When unsure, prefer the stronger tier.",
-            },
-            "criteria": CANDIDATES,
-        },
-        "depth": {
-            "type": "choice",
-            "instructions": "What thinking depth does this task require? For trivially mechanical tasks choose the lowest level; hardest problems need the maximum.",
-            "criteria": {
-                "low": "No deep reasoning needed.",
-                "medium": "Some careful thought.",
-                "high": "Substantial reasoning required.",
-                "xhigh": "Very deep reasoning.",
-                "max": "Maximum reasoning depth for the hardest problems.",
-            },
-        },
-    }
+    return QUESTIONS
+
 
 def load_key():
     """The file wins (the environment can be polluted); env as a last resort."""
@@ -102,18 +62,6 @@ def post_json(url, key, body, attempts=3):
                 continue
             raise RuntimeError(f"connection failed: {e!r}")
 
-def validate_choice(answer, ids):
-    probs = answer.get("probabilities") or {}
-    conf = answer.get("confidence")
-    ok = (answer.get("choice") in ids
-          and set(probs) == set(ids)
-          and all(isinstance(n, (int, float)) and math.isfinite(n) and 0 <= n <= 1 for n in [*probs.values(), conf if conf is not None else 0])
-          and abs(sum(probs.values()) - 1) < 0.02
-          and probs[answer["choice"]] >= max(probs.values()) - 1e-6)
-    if not ok:
-        raise ValueError(f"invalid choice answer: {answer!r}")
-    return answer
-
 def run(args):
     tasks = json.load(open(args.tasks, encoding="utf-8"))
     key = load_key()
@@ -132,18 +80,17 @@ def run(args):
         try:
             resp = post_json(API, key, body)
             ans = resp.get("answers", {})
-            tier = validate_choice(ans.get("tier", {}), set(CANDIDATES))
-            d = ans.get("depth", {}) or {}
-            depth_level = d.get("score") or d.get("choice") or "medium"
-            model, effort, speed = route_for(tier["choice"], depth_level)
+            decision = decision_from_answers(ans)
+            model, effort, speed = (decision["model"], decision["effort"], decision["speed"])
+            confidence = decision["confidence"]
             ms = round((time.perf_counter() - started) * 1000)
             usage = resp.get("usage", {}) or {}
-            results.append({"id": t["id"], "tier": tier["choice"], "conf": tier["confidence"],
-                            "depth": depth_level, "model": model, "effort": effort, "speed": speed,
+            results.append({"id": t["id"], "tier": model, "conf": confidence, "policy_version": POLICY_VERSION,
+                            "depth": effort, "model": model, "effort": effort, "speed": speed,
                             "expect": str(t.get("expect")), "ms": ms,
                             "in_tok": usage.get("input_tokens") or usage.get("inputTokens")})
-            flag = "" if str(t.get("expect")) == tier["choice"] else f"  (expected: {t.get('expect')})"
-            print(f"#{t['id']:>3}  {tier['choice']:<14} conf={tier['confidence']:.2f}  depth={str(depth_level):<6} -> {model} @{effort} [{speed}]  {ms} ms{flag}")
+            flag = "" if str(t.get("expect")) == model else f"  (expected: {t.get('expect')})"
+            print(f"#{t['id']:>3}  {model:<14} conf={confidence} -> @{effort} [{speed}]  {ms} ms{flag}")
         except Exception as e:
             print(f"#{t['id']:>3}  ERROR: {e}")
     if results:

@@ -1,7 +1,12 @@
 # Backtest: per-turn routing savings on real agentic sessions
 
-**Measured result: −60 % vs a full-frontier baseline** on a 7-day replay of 237
+**Historical simulated result: −60 % vs a full-frontier baseline** on a 7-day replay of 237
 real Codex turns (list-price equivalent; protocol and limitations below).
+
+The tables below describe the September 17 policy (Luna max + Fast, confidence
+fallback to Sol), not `joint-v1-standard` introduced September 20. The current
+policy uses a joint model/effort judgment, standard speed, and no confidence
+fallback. Its quota savings and task quality still need outcome measurements.
 
 This document specifies exactly how the savings claim is measured, and publishes
 the aggregate results. The replay is fully local: real turns and their own token
@@ -80,12 +85,16 @@ is preserved in both.
 ## Reproducibility
 
 ```bash
-python3 poc/backtest_savings.py --days 7          # classify + price (local)
+python3 poc/backtest_savings.py --days 7          # classify current policy + reprice
 python3 poc/backtest_savings.py --days 7 --from-cache   # re-price only
 ```
 
+The current script uses the live joint-decision contract, so these commands do
+not reproduce the historical table above. A cache from an older policy is
+rejected. The pre-change implementation is available in commit `bebb601`.
+
 Aggregates are written locally (`~/.codex/codex-router/jev-backtest.json`).
-A pre-redacted sample run is available at `poc/backtest-sample-results.json`.
+A pre-redacted historical sample run is available at `poc/backtest-sample-results.json`.
 
 ## The live counterpart
 
@@ -99,11 +108,12 @@ python3 server/report_routing.py --days 7          # text tables
 python3 server/report_routing.py --days 7 --json   # machine-readable
 ```
 
-It reports the served distribution, the gates, median latency, and a cost
-estimate in **relative units (1 unit = 1 luna turn)** — same published rates as
-this backtest, applied to the fixed token mix measured above — against the
-all-astra and all-sol baselines. It also echoes the last `jev-backtest.json`
-aggregate, so the USD figures and the live routing mix sit in one report.
+It reports the served distribution, gates and latency, along with per-attempt
+usage for new entries. Observed tokens are repriced using standard ChatGPT credit
+rates for native-only comparisons with Sol and Astra. Legacy records retain a
+separate fixed-volume API proxy and their historical speed surcharge. These
+comparisons hold token volumes constant and are not proof of equivalent quality
+or observed account quota savings. The old USD backtest is labelled historical.
 
 ## Data handling
 

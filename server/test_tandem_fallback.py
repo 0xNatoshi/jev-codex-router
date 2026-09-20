@@ -16,6 +16,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import jev_server as jev
 
@@ -40,6 +41,7 @@ class Edge(BaseHTTPRequestHandler):
     """Stands in for the router's local caller edge."""
 
     attempts = []
+    payloads = []
     refuse = ()
     body = COMPLETED
     reset_at = 0
@@ -50,6 +52,7 @@ class Edge(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
+        type(self).payloads.append(body)
         model = body.get("model")
         type(self).attempts.append((model, (body.get("reasoning") or {}).get("effort")))
         if model in type(self).refuse:
@@ -73,9 +76,29 @@ class Edge(BaseHTTPRequestHandler):
 class TandemHandoff(unittest.TestCase):
     def setUp(self):
         Edge.attempts = []
+        Edge.payloads = []
         Edge.refuse = ()
         Edge.body = COMPLETED
         Edge.reset_at = 0
+        # Tests must not read the installed sentinels, write the live decision
+        # log, or depend on the user's current fallback model configuration.
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
+                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH", "GATEWAY_FLAG"):
+            self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
+        self.enterContext(mock.patch.object(jev, "STATE", tmp))
+        self.enterContext(mock.patch.object(jev, "GO_STANDARD", "fixture/standard"))
+        self.enterContext(mock.patch.object(jev, "GO_FRONTIER", "fixture/frontier"))
+        self.enterContext(mock.patch.object(jev, "GO_TANDEM",
+                                          ("fixture/standard", "fixture/frontier")))
+        self.logged = threading.Event()
+        original_log = jev.log_line
+
+        def record(entry):
+            original_log(entry)
+            self.logged.set()
+
+        self.enterContext(mock.patch.object(jev, "log_line", side_effect=record))
         self.edge = ThreadingHTTPServer(("127.0.0.1", 0), Edge)
         threading.Thread(target=self.edge.serve_forever, daemon=True).start()
         # Keep the decision local: no Jev call (so no API key), dry mode on.
@@ -93,7 +116,8 @@ class TandemHandoff(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def call(self, stream=False):
+    def call(self, stream=False, **overrides):
+        self.logged.clear()
         payload = {
             "model": "auto",
             "stream": stream,
@@ -103,6 +127,7 @@ class TandemHandoff(unittest.TestCase):
                 "content": [{"type": "input_text", "text": "say OK"}],
             }],
         }
+        payload.update(overrides)
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.server.server_address[1]}/v1/responses",
             data=json.dumps(payload).encode(),
@@ -110,15 +135,17 @@ class TandemHandoff(unittest.TestCase):
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return response.status, response.read()
+                result = response.status, response.read()
         except urllib.error.HTTPError as error:
             body = error.read()
             error.close()
-            return error.code, body
+            result = error.code, body
+        self.assertTrue(self.logged.wait(2), "wait for post-response state and telemetry")
+        return result
 
     def test_a_refused_tandem_call_is_retried_on_the_sibling(self):
         Edge.refuse = (jev.GO_FRONTIER,)
-        status, body = self.call()
+        status, body = self.call(service_tier="priority")
         self.assertEqual(status, 200, body)
         self.assertEqual(
             [model for model, _effort in Edge.attempts],
@@ -127,6 +154,81 @@ class TandemHandoff(unittest.TestCase):
         # The depth survives the switch, and both attempts carry a rung the Go
         # models declare.
         self.assertEqual({effort for _model, effort in Edge.attempts}, {"high"})
+        self.assertEqual([p["service_tier"] for p in Edge.payloads],
+                         ["default", "default"])
+
+    def test_native_calls_replace_client_fast_and_max_with_the_jev_decision(self):
+        jev.native_dry = lambda: None
+        jev.load_key = lambda: "fixture-key"
+        for tier, depth, client_speed in ((jev.LUNA, "low", "priority"),
+                                         (jev.LUNA, "medium", "fast"),
+                                         (jev.SOL, "high", "priority"),
+                                         (jev.ASTRA, "xhigh", "fast")):
+            with self.subTest(tier=tier, depth=depth), mock.patch.object(
+                jev, "call_jev_routed", return_value={"answers": {
+                    "route": {"choice": f"{tier}:{depth}", "confidence": 0.1},
+                }}
+            ):
+                status, body = self.call(service_tier=client_speed,
+                                         reasoning={"effort": "max", "summary": "auto"})
+                self.assertEqual(status, 200, body)
+                sent = Edge.payloads[-1]
+                self.assertEqual(sent["model"], tier)
+                self.assertEqual(sent["reasoning"], {"effort": depth, "summary": "auto"})
+                self.assertEqual(sent["service_tier"], "default")
+                self.assertTrue(sent["stream"])
+
+    def test_kill_switch_and_shadow_do_not_inherit_fast(self):
+        jev.native_dry = lambda: None
+        for flag in (jev.OFF_PATH, jev.SHADOW_PATH):
+            with self.subTest(flag=os.path.basename(flag)):
+                with open(flag, "w"):
+                    pass
+                try:
+                    status, body = self.call(service_tier="priority")
+                    self.assertEqual(status, 200, body)
+                    self.assertEqual(Edge.payloads[-1]["service_tier"], "default")
+                finally:
+                    os.unlink(flag)
+
+    def test_compaction_is_judged_instead_of_pinned_to_sol_high(self):
+        jev.native_dry = lambda: None
+        jev.load_key = lambda: "fixture-key"
+        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
+            "route": {"choice": f"{jev.ASTRA}:low", "confidence": 0.2},
+        }}) as judge:
+            status, body = self.call(input="You are creating a lossy continuation checkpoint")
+        self.assertEqual(status, 200, body)
+        judge.assert_called_once()
+        self.assertEqual(Edge.attempts[-1], (jev.ASTRA, "low"))
+
+    def test_usage_is_logged_for_streaming_and_nonstreaming_calls(self):
+        Edge.body = (
+            b'data: {"type":"response.completed","response":{"id":"r","status":"completed",'
+            b'"output":[],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80},'
+            b'"output_tokens":20,"output_tokens_details":{"reasoning_tokens":15}}}}\n\n'
+        )
+        logged = threading.Event()
+        original_log = jev.log_line
+
+        def capture(record):
+            original_log(record)
+            logged.set()
+
+        with mock.patch.object(jev, "log_line", side_effect=capture):
+            for stream in (True, False):
+                with self.subTest(stream=stream):
+                    logged.clear()
+                    status, body = self.call(stream=stream)
+                    self.assertEqual(status, 200, body)
+                    self.assertTrue(logged.wait(2), "logging follows the terminal response")
+                    with open(jev.LOG_PATH) as handle:
+                        record = json.loads(handle.readlines()[-1])
+                    self.assertEqual(len(record["attempts"]), 1)
+                    attempt = record["attempts"][0]
+                    self.assertEqual(attempt["terminal_type"], "response.completed")
+                    self.assertEqual(attempt["usage"]["cached_input_tokens"], 80)
+                    self.assertEqual(attempt["usage"]["reasoning_tokens"], 15)
 
     def test_both_models_refusing_still_answers_the_caller(self):
         Edge.refuse = (jev.GO_FRONTIER, jev.GO_STANDARD)

@@ -183,8 +183,8 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 - **Debug capture** (bounded): `touch ~/.codex/codex-router/jev-router.debug`
   → request shapes in `jev-router-debug.jsonl` and raw response streams in
   `jev-router-debug-stream.log`. Remove the file to stop.
-- **Tune the policy**: constants at the top of `server/jev_server.py`
-  (`CONF_GATE`, tiers). Restart the server after edits.
+- **Tune the policy**: the shared contract in `server/routing_policy.py`. Keep decisions
+  joint and evidence-based; restart the server after edits.
 - **Backtest**: `python3 poc/backtest_savings.py --days 7` (see BACKTEST.md).
 - **Disable**: `./bin/codex-router providers generic disable jev` (keeps state);
   full rollback: also `./bin/codex-router chatgpt-session disable` and stop the
@@ -207,9 +207,15 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- Each decision costs ≈ 0.6–0.9 s and ≈ $0.00003 (Jev input pricing).
-- Any Jev failure is fail-open: the turn is served by astra @medium and the
-  fallback is logged (`gate=jev_error:*`).
-- Default routing policy: luna = always max thinking + fast mode; sol/astra =
-  adaptive depth; low-confidence turns fall back to the **middle tier (sol)** —
-  see BACKTEST.md for why that single choice is worth ~80% of the savings.
+- The current policy is `joint-v1-standard`: Jev chooses one of 15 model/effort
+  pairs per call. All tiers use adaptive effort and standard speed; never force
+  Luna to max or enable Fast mode.
+- No scenario overrides, target model shares, or confidence threshold may
+  replace a valid Jev choice with Sol, Luna or Astra. Confidence is diagnostic.
+- Provider/schema failures remain distinct: Astra at medium, logged as a
+  technical fallback. Kill switch and exhausted-native-quota handling still apply.
+- Jev usage and upstream per-attempt tokens are logged when available. Run
+  `python3 server/report_routing.py --days 7` for native-only credit estimates;
+  unknown usage remains unknown and reasoning tokens are not counted twice.
+- `BACKTEST.md` documents the old policy's fixed-token simulation. It is not a
+  measurement of current quota savings or result quality.
