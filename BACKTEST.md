@@ -87,6 +87,24 @@ python3 poc/backtest_savings.py --days 7 --from-cache   # re-price only
 Aggregates are written locally (`~/.codex/codex-router/jev-backtest.json`).
 A pre-redacted sample run is available at `poc/backtest-sample-results.json`.
 
+## The live counterpart
+
+The backtest answers "what would the policy cost on a week of real turns?".
+`server/report_routing.py` answers the other half, straight from the router's own
+decision log (`~/.codex/codex-router/jev-router-live.jsonl`), with no calls and no
+replay:
+
+```bash
+python3 server/report_routing.py --days 7          # text tables
+python3 server/report_routing.py --days 7 --json   # machine-readable
+```
+
+It reports the served distribution, the gates, median latency, and a cost
+estimate in **relative units (1 unit = 1 luna turn)** — same published rates as
+this backtest, applied to the fixed token mix measured above — against the
+all-astra and all-sol baselines. It also echoes the last `jev-backtest.json`
+aggregate, so the USD figures and the live routing mix sit in one report.
+
 ## Data handling
 
 Only aggregate figures are published. No prompts, file paths, project names,

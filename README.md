@@ -103,6 +103,34 @@ replaces the finished turn with an `invalid_responses_stream` error; the relay
 therefore rewrites the terminal id onto the one `response.created` announced.
 Native turns are untouched — their ids already match.
 
+## Measuring what it served
+
+The router logs one JSON line per decision (`~/.codex/codex-router/jev-router-live.jsonl`).
+`server/report_routing.py` turns that log into the routing/savings report — the
+table a third party can reproduce on their own machine:
+
+```bash
+python3 server/report_routing.py --days 7          # text tables (default window)
+python3 server/report_routing.py --days 30 --json  # machine-readable
+```
+
+It prints the served model distribution (luna/sol/astra, plus the Codex-dry
+tandem when it took over: turns + %), the share of turns served by the cheapest
+tier, the share of turns held below the confidence gate, the gates encountered,
+median latency (end-to-end and Jev's own decision time), and an estimate of the
+real cost against two counterfactuals — every turn on `gpt-6-astra`, and every
+turn on `gpt-5.6-sol`.
+
+The live log carries no token counts, so the cost block works in **relative
+units, one unit = one luna turn**: published list rates (the same table as
+`poc/backtest_savings.py`) applied to the token mix measured in `BACKTEST.md`,
+with luna priced in Fast mode (×2, the policy always runs it at max on the
+priority lane). Units per turn are printed by the report — on the current rates
+luna 1.00 · sol 9.82 · astra 24.54 — and the mix is one constant to change. When
+`~/.codex/codex-router/jev-backtest.json` exists, the report echoes its
+**measured USD** figures alongside, which come from real per-turn token usage
+(`poc/backtest_savings.py`, see `BACKTEST.md`).
+
 ## Ask surface (`POST /ask`)
 
 The server also answers typed questions directly, for local callers that bring
