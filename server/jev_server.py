@@ -212,11 +212,18 @@ QUESTIONS = {
             "prepared edit, checking output, routine file reads) are fine on gpt-5.6-luna; "
             "standard next actions belong to gpt-5.6-sol; reserve gpt-6-astra for steps that need "
             "frontier reasoning (complex debugging after failures, architecture, ambiguous or "
-            "risky changes). When the call starts a fresh user turn, route the task itself."
+            "risky changes). When the call starts a fresh user turn, route the task itself. "
+            "COST: gpt-5.6-luna costs about FIVE TIMES LESS than gpt-5.6-sol, so lean luna by "
+            "default and escalate only when the work genuinely needs more. Anything simple — a "
+            "greeting, a short answer, a one-line question, a quick lookup, a short summary, a "
+            "small scoped edit — belongs to luna; choose sol only for real standard implementation "
+            "work, and astra only for the frontier cases above."
         ),
         "criteria": {
-            LUNA: "Fast and cheap; mechanical or clearly scoped tasks.",
-            SOL: "Workhorse; standard implementation work.",
+            LUNA: "Fast and cheap (about 5x cheaper than sol): greetings, short answers, simple "
+                  "questions, lookups, short summaries, clearly scoped or mechanical work — the "
+                  "default for anything simple.",
+            SOL: "Workhorse; standard implementation work that needs more than a quick answer.",
             ASTRA: "Frontier; hard, ambiguous, or risky problems.",
         },
     },
@@ -531,19 +538,16 @@ def route(tier, depth, conf, step=None):
     tier's stated job, and luna runs on the priority fast lane at ~1/10th of
     sol's rates.
     """
-    shallow = (depth or "low") in ("low", "medium")
-    errored = isinstance(step, dict) and bool(step.get("errored"))
-    tool_step = isinstance(step, dict) and step.get("step_type") == "tool_step"
-    # Tâche simple = luna, quelle que soit la proposition de Jev : une réponse
-    # conversationnelle courte (pas de tool step, pas d'erreur, profondeur faible)
-    # ne justifie ni sol ni astra (Thib 20/09 : « test = réponse simple = luna »).
-    # Les tool steps gardent la politique backtestée (anti-downgrade).
-    if not tool_step and not errored and shallow:
-        return LUNA, "max", "priority", "hold(luna_chat)"
     if conf is not None and conf < CONF_GATE:
         # Backtest finding: falling back to astra ate ~80% of the savings;
         # the middle tier keeps the anti-downgrade property without burning the frontier.
-        if tool_step and tier == LUNA and not errored:
+        if (
+            tier == LUNA
+            and isinstance(step, dict)
+            and step.get("step_type") == "tool_step"
+            and not step.get("errored")
+            and (depth or "low") in ("low", "medium")
+        ):
             return LUNA, "max", "priority", "hold(luna_step)"
         return SOL, clamp_effort(depth), "default", "hold(sol)"
     if tier == LUNA:
