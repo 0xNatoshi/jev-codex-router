@@ -243,7 +243,11 @@ cd <codex-router checkout>
 ```
 
 **4. Quit and reopen Codex**, then pick **“Jev Codex Router”** in the model picker.
-Every turn now gets its own route.
+Check the transport as well as the picker: `jev/auto` must reach the local
+router, not OpenAI's native endpoint. A catalog entry or a
+`[model_providers.jev]` declaration alone does not select that transport.
+See [transport troubleshooting](server/INSTALL.md#model-visible-but-rejected-by-chatgpt)
+if Codex reports that `jev/auto` is unsupported with a ChatGPT account.
 
 **5. Make it permanent** (optional but recommended): run the service installer
 in your own Terminal (launchd management is intentionally restricted inside

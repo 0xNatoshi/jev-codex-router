@@ -44,6 +44,36 @@ touch them. Verify anyway:
 - **Model missing from the picker**: re-run `refresh-catalog` and
   `picker set jev/auto show`, then fully restart Codex.
 
+### Model visible but rejected by ChatGPT
+
+`The 'jev/auto' model is not supported when using Codex with a ChatGPT account`
+can mean the model is selected while the OpenAI provider still points directly
+at OpenAI. Listing a model in a catalog, or declaring `[model_providers.jev]`,
+does not associate an existing task with that provider.
+
+1. Inspect `./bin/codex-router status`: check `model_provider` and the redacted
+   `openai_base_url`, not just whether the service is running.
+2. Verify the main router has the enabled `jev` generic provider and the
+   `jev/auto` entry in `user-models.json`. A direct Codex provider declaration
+   is a separate configuration. Reload the router after restoring its routes;
+   its startup regenerates the gateway configuration from source.
+3. Preserve a user-owned `model_catalog_json`. With the built-in `openai`
+   provider, Codex supports a user-level `openai_base_url` pointing to the
+   router's authenticated loopback Responses entry. Use Codex's
+   `config/value/write` API for this setting; resolve the caller capability
+   locally from its protected file, never print it or put it in command
+   arguments. Leave other provider definitions and model defaults intact.
+4. Verify a small request through **4202 → Jev 4319 → native 4202**, then through
+   an ephemeral Codex invocation reading the saved configuration. Checking
+   Jev's health alone does not exercise the client transport.
+5. Quit and reopen Codex on the host Mac to reload the configuration before
+   retrying the existing task from desktop or mobile.
+
+The built-in OpenAI transport override was verified with Codex
+`0.155.0-alpha.9.2`; no switch to a different provider or catalog was needed.
+See the [official configuration documentation](https://learn.chatgpt.com/docs/config-file/config-advanced)
+for the distinction between the built-in endpoint override and custom providers.
+
 ## Design notes
 
 - The edge emits SSE with no Content-Type; we always re-emit
