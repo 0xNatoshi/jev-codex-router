@@ -17,10 +17,13 @@ from routing_policy import (
 class SplitPolicy(unittest.TestCase):
     def test_the_repeated_contract_stays_compact_and_explicit(self):
         encoded = json.dumps(QUESTIONS, separators=(",", ":"))
-        self.assertLessEqual(len(encoded), 2150)
+        self.assertLessEqual(len(encoded), 2300)
         self.assertNotIn('"luna":"luna"', encoded)
         self.assertIn("Intermittent or concurrency failures", encoded)
-        self.assertIn("reviews or audits code, security, or performance", encoded)
+        self.assertIn("code, security or performance review", encoded)
+        self.assertEqual(set(QUESTIONS), {"astra_policy", "model", "effort"})
+        self.assertIn("corrections and clarification turns", encoded)
+        self.assertIn("Do not inherit a completed phase", encoded)
 
     def test_every_valid_pair_survives_confidence_and_step_metadata(self):
         for model in jev.TIERS:

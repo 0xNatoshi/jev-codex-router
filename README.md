@@ -81,6 +81,12 @@ reasoning. These profiles are routing priors, not measured capability guarantees
 Terra attempts are counted as native in reports; its ChatGPT credit estimate
 remains unknown until a verified credit rate is configured.
 
+Policy `split-v6-intent-aware` judges remaining work rather than inheriting a
+completed review's category. Explicit mechanical follow-through can use Luna;
+implied intent, underspecified goals and autonomous investigation favor Sol.
+The objective includes correction and clarification costs. There is no
+keyword-based override or automatic model floor on conversation openings.
+
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,
 not on a desired share of Luna calls or artificially high confidence. Schema

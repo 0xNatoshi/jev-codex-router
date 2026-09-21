@@ -209,7 +209,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v5-terra`: one System One request asks
+- The current policy is `split-v6-intent-aware`: one System One request asks
   three independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier and reasoning effort — for every model call, including
   tool continuations and post-compaction calls. Pre-project software/project
@@ -228,6 +228,10 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   is diagnostic. The native ladder is Luna → Terra → Sol → Astra. Terra covers
   routine bounded implementation with clear requirements; Sol covers complex
   implementation and cross-file reasoning. Mandatory Astra categories still win.
+  Judge remaining work, not completed phases: administrative follow-through is
+  not review. Luna needs explicit mechanical work; implied intent and autonomous
+  investigation belong to Sol. Optimize total task cost including clarification
+  and correction turns, without scenario regexes or automatic opening floors.
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run
