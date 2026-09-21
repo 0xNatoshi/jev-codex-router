@@ -87,6 +87,8 @@ it already has `models`, append to the array instead of overwriting):
       ],
       "contextWindow": 258400,
       "autoCompact": 219640,
+      "searchTool": {"mode": "hosted"},
+      "supportsSearchHistory": true,
       "inputModalities": ["text", "image"]
     }
   ]

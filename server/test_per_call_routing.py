@@ -236,6 +236,26 @@ class PerCallEndToEnd(unittest.TestCase):
         self.assertEqual([p["input"] for p in Edge.payloads], [first, second])
         self.assertNotIn(cache_key, json.dumps(self.records))
 
+    def test_completed_web_search_history_survives_a_model_swap(self):
+        history = [
+            {
+                "type": "web_search_call",
+                "id": "ws_completed",
+                "status": "completed",
+                "action": {"type": "search", "query": "router execution contract"},
+            },
+            message("user", "Summarize the verified result."),
+        ]
+        sent = payload_for(history)
+        sent["tools"] = [{"type": "web_search"}]
+        with mock.patch.object(
+            jev, "call_jev_routed", return_value=answer(jev.SOL, "medium")
+        ):
+            self.call(sent)
+        self.assertEqual(Edge.payloads[-1]["model"], jev.SOL)
+        self.assertEqual(Edge.payloads[-1]["input"], history)
+        self.assertEqual(Edge.payloads[-1]["tools"], [{"type": "web_search"}])
+
     def test_two_threads_route_independently(self):
         with mock.patch.object(jev, "call_jev_routed", return_value=answer(jev.LUNA, "low")):
             self.call(payload_for([message("user", "first thread task")], cache_key="pck-a"))

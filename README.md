@@ -284,6 +284,8 @@ cd <codex-router checkout>
       ],
       "contextWindow": 258400,
       "autoCompact": 219640,
+      "searchTool": { "mode": "hosted" },
+      "supportsSearchHistory": true,
       "inputModalities": ["text", "image"]
     }
   ]
