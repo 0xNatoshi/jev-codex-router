@@ -18,6 +18,7 @@ repo_dir=$(CDPATH='' cd -P -- "$(dirname -- "$self")/.." && pwd -P)
 prepare_only=false
 migrate_known=false
 adopt_native_catalog=false
+take_over_managed_router=false
 force_deps=false
 target=${MODEL_ROUTER_TARGET:-codex}
 
@@ -31,8 +32,9 @@ for argument in "$@"; do
     --prepare-only) prepare_only=true ;;
     --migrate-known) migrate_known=true ;;
     --adopt-native-catalog) adopt_native_catalog=true ;;
+    --take-over-managed-router) take_over_managed_router=true ;;
     --force-deps) force_deps=true ;;
-    *) echo "Usage: $0 [--prepare-only] [--migrate-known] [--adopt-native-catalog] [--force-deps]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--prepare-only] [--migrate-known] [--adopt-native-catalog] [--take-over-managed-router] [--force-deps]" >&2; exit 2 ;;
   esac
 done
 
@@ -56,8 +58,16 @@ if [ "$prepare_only" = true ] && [ "$adopt_native_catalog" = true ]; then
   echo "--adopt-native-catalog cannot be used with --prepare-only." >&2
   exit 2
 fi
+if [ "$prepare_only" = true ] && [ "$take_over_managed_router" = true ]; then
+  echo "--take-over-managed-router cannot be used with --prepare-only." >&2
+  exit 2
+fi
 if [ "$migrate_known" = true ] && [ "$adopt_native_catalog" = true ]; then
   echo "--adopt-native-catalog cannot be combined with --migrate-known." >&2
+  exit 2
+fi
+if [ "$take_over_managed_router" = true ] && { [ "$migrate_known" = true ] || [ "$adopt_native_catalog" = true ]; }; then
+  echo "--take-over-managed-router cannot be combined with another migration mode." >&2
   exit 2
 fi
 # The native catalog is the ChatGPT-plan model list Codex ships and adopts.
@@ -146,6 +156,10 @@ if [ "$migrate_known" = true ]; then
 else
   if [ "$adopt_native_catalog" = true ]; then
     node src/legacy-migration.mjs assert-clear --adopt-native-catalog >/dev/null
+  elif [ "$take_over_managed_router" = true ]; then
+    node src/legacy-migration.mjs assert-clear --take-over-managed-router >/dev/null
+    MODEL_ROUTER_CONFIRMED_TAKEOVER=1
+    export MODEL_ROUTER_CONFIRMED_TAKEOVER
   else
     node src/legacy-migration.mjs assert-clear >/dev/null
   fi
@@ -411,6 +425,8 @@ fi
 config_enabled=true
 if [ "$adopt_native_catalog" = true ]; then
   node "$config_manager" "$config_enable_command" --adopt-native-catalog
+elif [ "$take_over_managed_router" = true ]; then
+  node "$config_manager" "$config_enable_command" --take-over-managed-router
 else
   node "$config_manager" "$config_enable_command"
 fi

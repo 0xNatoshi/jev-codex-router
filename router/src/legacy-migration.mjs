@@ -21,12 +21,14 @@ import {
 import {
   CODEX_HOME,
   CONFIG_PATH,
+  INSTALL_MANIFEST_PATH,
   LEGACY_SERVICE_LABEL,
   LEGACY_STATE_DIR,
   LAUNCH_AGENTS_DIR,
   MIGRATIONS_DIR,
   MERGED_CATALOG_PATH,
   PROTOTYPE_SERVICE_LABEL,
+  PORTS,
   SERVICE_LABEL,
   SOURCE_ROOT,
 } from "./paths.mjs";
@@ -127,6 +129,42 @@ export function detectLegacyInstallations() {
       modelCatalogJson: unknownCatalog || modelCatalogs[0] || null,
     },
   };
+}
+
+export function managedRouterTakeoverAllowed(detected = detectLegacyInstallations()) {
+  if (!detected.unknownConflict || detected.installations.length > 0) return false;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(INSTALL_MANIFEST_PATH, "utf8"));
+  } catch {
+    return false;
+  }
+  const previousSource = manifest?.current?.sourceRoot;
+  if (
+    typeof previousSource !== "string" ||
+    !path.isAbsolute(previousSource) ||
+    path.resolve(previousSource) === path.resolve(SOURCE_ROOT)
+  ) {
+    return false;
+  }
+  const baseUrls = readRootStringValues(configText(), "openai_base_url");
+  if (
+    baseUrls.length !== 1 ||
+    rootAssignmentCount(configText(), "openai_base_url") !== 1
+  ) {
+    return false;
+  }
+  try {
+    const parsed = new URL(baseUrls[0]);
+    return (
+      parsed.protocol === "http:" &&
+      parsed.hostname === "127.0.0.1" &&
+      parsed.port === String(PORTS.router) &&
+      /^\/_codex-router\/[^/]+\/v1\/?$/.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function safeTimestamp() {
@@ -303,9 +341,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else if (command === "assert-clear") {
       const detected = detectLegacyInstallations();
       if (detected.unknownConflict) {
+        const managedTakeover =
+          process.argv.includes("--take-over-managed-router") &&
+          managedRouterTakeoverAllowed(detected);
         if (
-          !process.argv.includes("--adopt-native-catalog") ||
-          !detected.adoptableNativeCatalog
+          !managedTakeover &&
+          (
+            !process.argv.includes("--adopt-native-catalog") ||
+            !detected.adoptableNativeCatalog
+          )
         ) {
           throw new Error(
             `Another router owns ${detected.config.modelCatalogJson}; it must be handled manually or explicitly adopted when it is a valid native catalog.`,
@@ -324,7 +368,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.stdout.write(`${JSON.stringify(rollbackLatestMigration(), null, 2)}\n`);
     } else {
       console.error(
-        "Usage: legacy-migration.mjs detect|assert-clear [--adopt-native-catalog]|apply --yes|rollback --yes",
+        "Usage: legacy-migration.mjs detect|assert-clear [--adopt-native-catalog|--take-over-managed-router]|apply --yes|rollback --yes",
       );
       process.exitCode = 2;
     }

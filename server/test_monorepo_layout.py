@@ -29,6 +29,7 @@ class EmbeddedRouterLayout(unittest.TestCase):
         self.assertIn('CODEX_HOME=$prepare_home', installer)
         self.assertIn('"$router_dir/bin/install" --prepare-only', installer)
         self.assertNotIn('"$router_dir/install.sh" --prepare-only', installer)
+        self.assertIn('"$router_dir/bin/install" --take-over-managed-router', installer)
 
     def test_model_configuration_is_idempotent_and_preserves_other_routes(self):
         with tempfile.TemporaryDirectory() as temp:

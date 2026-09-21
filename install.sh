@@ -63,7 +63,7 @@ if [ "$mode" = prepare ]; then
 fi
 
 if [ -f "$state_dir/enabled-providers.json" ]; then
-  "$router_dir/bin/install"
+  "$router_dir/bin/install" --take-over-managed-router
 else
   "$router_dir/install.sh" --no-provider --no-discovery --no-tray
 fi

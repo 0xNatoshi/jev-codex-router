@@ -30,6 +30,7 @@ after(() => {
 const {
   applyKnownMigrations,
   detectLegacyInstallations,
+  managedRouterTakeoverAllowed,
   rollbackLatestMigration,
 } = await import("../src/legacy-migration.mjs");
 const { privateFileIsProtected } = await import("../src/file-security.mjs");
@@ -157,6 +158,46 @@ test("a valid user-owned native catalog is explicitly adoptable", () => {
     assert.equal(detectLegacyInstallations().adoptableNativeCatalog, false);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("only a manifest-backed authenticated loopback router can be taken over", () => {
+  mkdirSync(codexHome, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  const manifestPath = path.join(stateDir, "install-manifest.json");
+  const foreign = path.join(testRoot, "previous-router", "models.json");
+  writeFileSync(
+    configPath,
+    `openai_base_url = "http://127.0.0.1:46192/_codex-router/test-capability/v1"\n` +
+      `model_catalog_json = ${JSON.stringify(foreign)}\n`,
+    { mode: 0o600 },
+  );
+  try {
+    const detected = detectLegacyInstallations();
+    assert.equal(detected.unknownConflict, true);
+    assert.equal(managedRouterTakeoverAllowed(detected), false);
+
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify({
+        version: 1,
+        current: { sourceRoot: path.join(testRoot, "previous-router") },
+      })}\n`,
+      { mode: 0o600 },
+    );
+    assert.equal(managedRouterTakeoverAllowed(detected), true);
+
+    writeFileSync(
+      configPath,
+      `openai_base_url = "https://example.test/v1"\n` +
+        `model_catalog_json = ${JSON.stringify(foreign)}\n`,
+      { mode: 0o600 },
+    );
+    assert.equal(managedRouterTakeoverAllowed(detectLegacyInstallations()), false);
+  } finally {
+    rmSync(configPath, { force: true });
+    rmSync(manifestPath, { force: true });
   }
 });
 

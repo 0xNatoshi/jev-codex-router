@@ -152,6 +152,9 @@ const markerPairs = [
 ];
 const command = process.argv[2] || "status";
 const adoptNativeCatalog = process.argv.includes("--adopt-native-catalog");
+const takeOverManagedRouter =
+  process.argv.includes("--take-over-managed-router") &&
+  process.env.MODEL_ROUTER_CONFIRMED_TAKEOVER === "1";
 const preserveRootOpenaiSignedMode = process.argv.includes("--preserve-root-openai");
 let nativeCatalogNeedsActivation = false;
 
@@ -1484,22 +1487,36 @@ function enabledContents(contents, { loginFreeProvider = false } = {}) {
   let rootLines = trimBlankEdges(cleaned.rootLines);
   const existingBase = rootValue(rootLines, "openai_base_url");
   const existingCatalog = rootValue(rootLines, "model_catalog_json");
+  const replacingPreviousRouterBase =
+    takeOverManagedRouter &&
+    existingBase &&
+    isManagedRouterBaseUrl(existingBase);
   if (existingBase && existingBase !== routerBaseUrl) {
-    throw new Error(
-      `Refusing to replace user-owned openai_base_url: ${redactCallerUrl(existingBase)}`,
-    );
+    if (!replacingPreviousRouterBase) {
+      throw new Error(
+        `Refusing to replace user-owned openai_base_url: ${redactCallerUrl(existingBase)}`,
+      );
+    }
+    const removable = new Set(rootAssignmentIndexes(rootLines.join("\n"), "openai_base_url"));
+    rootLines = rootLines.filter((_line, index) => !removable.has(index));
   }
   if (existingCatalog && existingCatalog !== MERGED_CATALOG_PATH) {
+    const replacingPreviousRouterCatalog =
+      replacingPreviousRouterBase ||
+      (takeOverManagedRouter && existingBase === routerBaseUrl);
     if (
-      !adoptNativeCatalog ||
-      !preparedSource ||
-      !catalogPathsEqual(preparedSource.path, existingCatalog)
+      !replacingPreviousRouterCatalog &&
+      (
+        !adoptNativeCatalog ||
+        !preparedSource ||
+        !catalogPathsEqual(preparedSource.path, existingCatalog)
+      )
     ) {
       throw new Error(`Refusing to replace user-owned model_catalog_json: ${existingCatalog}`);
     }
     const removable = new Set(rootAssignmentIndexes(rootLines.join("\n"), "model_catalog_json"));
     rootLines = rootLines.filter((_line, index) => !removable.has(index));
-    nativeCatalogNeedsActivation = preparedSource.status === "pending";
+    nativeCatalogNeedsActivation = preparedSource?.status === "pending";
   }
   const managedRealtimeOverrides = [];
   // Codex Voice uses a WebRTC call plus a sideband WebSocket. Keep both on
@@ -1598,7 +1615,7 @@ if (!new Set([
   "router-default-clear",
 ]).has(command)) {
   console.error(
-    "Usage: config-manager.mjs enable|disable|status|caller-capability-refresh|login-free-enable|login-free-disable|signed-enable|signed-disable|router-default-set MODEL|router-default-clear [--adopt-native-catalog]",
+    "Usage: config-manager.mjs enable|disable|status|caller-capability-refresh|login-free-enable|login-free-disable|signed-enable|signed-disable|router-default-set MODEL|router-default-clear [--adopt-native-catalog|--take-over-managed-router]",
   );
   process.exit(2);
 }

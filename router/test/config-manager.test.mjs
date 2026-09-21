@@ -1527,6 +1527,43 @@ test("config manager adopts and restores a prepared user-owned native catalog", 
   }
 });
 
+test("a confirmed managed-router takeover replaces only its routed catalog", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-takeover-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const previousCatalog = path.join(codexHome, "previous-router-models.json");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, "caller-secret"), `${CALLER_KEY}\n`, { mode: 0o600 });
+  writeFileSync(
+    configPath,
+    `model = "jev/auto"\n` +
+      `openai_base_url = "http://127.0.0.1:46192/_codex-router/${CALLER_KEY}/v1"\n` +
+      `model_catalog_json = ${JSON.stringify(previousCatalog)}\n`,
+    { mode: 0o600 },
+  );
+
+  try {
+    assert.throws(
+      () => run("enable", codexHome, stateDir, ["--take-over-managed-router"]),
+      /Refusing to replace user-owned (?:openai_base_url|model_catalog_json)/,
+    );
+    const enabled = run(
+      "enable",
+      codexHome,
+      stateDir,
+      ["--take-over-managed-router"],
+      { MODEL_ROUTER_CONFIRMED_TAKEOVER: "1" },
+    );
+    assert.equal(enabled.mode, "router");
+    assert.equal(enabled.model_catalog_json, path.join(stateDir, "merged-models.json"));
+    const configured = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(configured, new RegExp(previousCatalog.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(configured, /# BEGIN codex-router-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("signed routing preserves the active provider identity and exactly restores its table", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-provider-"));
   const stateDir = path.join(codexHome, "router-state");
