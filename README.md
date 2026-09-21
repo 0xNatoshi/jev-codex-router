@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml/badge.svg)](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml)
 
-**Per-turn model routing for Codex, driven by [Jev](https://docs.typesafe.ai) (TypeSafe System One).**
+**Per-call model routing for Codex, driven by [Jev](https://docs.typesafe.ai) (TypeSafe System One).**
 
 Jev chooses a model and thinking effort together for each model call, including
 continuations after tools. Every route uses standard speed. The objective is
@@ -127,9 +127,9 @@ python3 server/report_routing.py --days 30 --json  # machine-readable
 It prints the served model distribution (luna/sol/astra, plus the Codex-dry
 tandem when it took over: turns + %), the share of turns served by the cheapest
 tier, the share of turns held below the confidence gate, the gates encountered,
-median latency (end-to-end and Jev's own decision time), and an estimate of the
-real cost against two counterfactuals — every turn on `gpt-6-astra`, and every
-turn on `gpt-5.6-sol`.
+median latency (end-to-end and Jev's own decision time), observed prompt-cache
+reads by model and hashed session, and an estimate of the real cost against two
+counterfactuals — every turn on `gpt-6-astra`, and every turn on `gpt-5.6-sol`.
 
 New log entries record a versioned decision and each upstream attempt's model,
 effort, standard speed, terminal event and token usage when the provider reports
@@ -145,15 +145,20 @@ Their logged Fast speed retains its surcharge instead of being repriced by the
 new policy. The old backtest is clearly labelled as a simulation. Current replay
 scripts share the live decision contract and reject a cache from another policy.
 
-Routing is turn-scoped: the call that opens a turn (a user message) gets one Jev
-decision, and every continuation of that turn — tool steps, retries, and the call
-that follows a mid-turn compaction — reuses it, so the serving model cannot flip
-mid-turn. A new user ask opens the next turn; an entry that reused the turn's
-route carries `sticky: true` and the `gate` of the decision that opened it. The
-compact projection sent to Jev (task, signals, tool digest) is judgement input
-only: it is never reused as an execution prompt. The executing model always
-receives the caller's canonical request, with only the selected model, reasoning
-effort, standard service tier and required streaming flag applied to the relay.
+Routing is call-scoped: every user call, tool continuation and post-compaction
+call gets a fresh Jev decision, so the serving model may change between
+sub-actions. Provider retries inside one call retain that call's decision. Jev
+receives only a bounded decision dossier: active task, step type, and—when
+relevant—a short assistant-intent tail, tool name, tool-output tail or image
+flag. The executing model receives the caller's canonical request in full, with
+only the selected model, reasoning effort, standard service tier and required
+streaming flag changed.
+
+The original `prompt_cache_key` is forwarded unchanged. Cache reuse is therefore
+maintained separately for each `(session, model)` pair: returning to a model can
+reuse its stable prefix, but switching models is not treated as a shared cache
+hit. The report hashes session ids before logging them and shows actual
+`cached_input_tokens` by model; it does not claim cross-model cache reuse.
 
 ## Ask surface (`POST /ask`)
 

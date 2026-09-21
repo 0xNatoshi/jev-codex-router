@@ -12,30 +12,21 @@ Every pair uses standard speed. Confidence is logged without changing the chosen
 model. There are no keyword/scenario overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Turn-scoped sticky routing (v4): Jev decides once per turn, not once per call.
-The first call of a turn (a user message) opens it; every continuation of that
-turn — tool steps, retries, and the call that follows a mid-turn compaction —
-reuses that route instead of asking Jev again. A new user ask opens the next
-turn. A turn that opened on a technical Jev failure keeps that fail-open route
-for its continuations too, and the next turn probes Jev again. The compact Jev
-projection (task, signals, step digest) is judgment input only: the executing
-model always receives the caller's canonical request untouched, never that
-projection. Measured on live sessions: the previous
-per-call policy spent ~92% of its model calls on tool-steps, each one paying a
-decision that could change the route mid-turn.
+Per-call routing (v5): every model call is judged independently, so a tool loop
+may move between Luna, Sol and Astra as the next sub-action changes. Provider
+retries inside that call retain its decision. The compact Jev projection is
+judgment input only: the executing model always receives the caller's canonical
+request untouched, never that projection. The caller's prompt_cache_key also
+passes through untouched, allowing each selected model to reuse its own cache
+for this session; caches are not assumed to be shared across different models.
 
-Per-step awareness (v2): every request is classified as a fresh user turn, a
-tool-step continuation, or other, and a tool-step carries a digest of the last
-tool output and its tool name into the Jev state — the digest still only informs
-the decision that opens the turn.
-
-Input handling (v3): Jev sees the current ask, never the thread — the task is
+Input handling (v4): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
-(goal context, plugin catalog, environment, skills) and clipped to the
-calibrated 500 chars as head+tail, because Codex appends the real tail after
-its own blocks. Thread length never reaches the judge: extract() keeps one tail
-item, the assistant side is bounded to 240 chars, and the only thread-sized
-number (n_items) stays in the local log instead of the Jev state.
+(goal context, plugin catalog, environment, skills) and clipped head+tail.
+Thread length never reaches the judge. A tool continuation adds only its tool
+name, a short output tail and a short assistant-intent tail. The complete
+history, instructions, tools, results and compaction handoff remain exclusively
+in the canonical request sent to the executing model.
 Live data (4 516 calls): 1 291 (29%) had sent Jev nothing but a
 `<codex_internal_context source="goal">` block (~6.4k chars, p50) and 23 more
 only a `<recommended_plugins>` catalog — the head-clip stopped inside the
@@ -98,13 +89,6 @@ DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
-# Turn-scoped routing: one decision opens a turn, its continuations reuse it.
-TURN_TTL = 1800.0          # a turn keeps its route for at most this long
-TURN_REPLAY_WINDOW = 90.0  # the same ask re-delivered this soon is the same turn
-TURN_MAX = 256             # bounded memory: oldest turns are dropped first
-_TURNS = {}
-_TURNS_LOCK = threading.Lock()
-
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
@@ -166,13 +150,14 @@ TERMINAL_EVENT_TYPES = ("response.completed", "response.incomplete", "response.f
 
 ERROR_RX = re.compile(
     r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
-DIGEST_CHARS = 520
+DIGEST_CHARS = 280
+INTENT_CHARS = 160
 
-# The task budget Jev was calibrated on (500 chars), spent as a head+tail window
+# A compact task budget spent as a head+tail window
 # so the tail survives: Codex puts its own blocks around the user's text, and the
-# ask itself can be the last thing in a long paste. 320 + marker + 171 <= 500.
-TASK_CHARS = 500
-TASK_HEAD_CHARS = 320
+# ask itself can be the last thing in a long paste. 250 + marker + 141 <= 400.
+TASK_CHARS = 400
+TASK_HEAD_CHARS = 250
 TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
 TASK_CLIP_MARK = "\n[...]\n"
 
@@ -543,25 +528,17 @@ def classify(payload):
 
 
 def jev_state(task, prev_assistant, signals, step):
-    """The state sent to Jev: the current ask plus signals that do not grow.
-
-    `n_items` is deliberately left out. It is the one number that scales with the
-    thread, and the calibrated shapes (backtest, shadow replay) never carried it,
-    so letting it travel would make the same last exchange judge differently in a
-    long thread than in a short one — the opposite of per-call routing. It stays
-    in the local decision log.
-    """
-    state = {
-        "task": task,
-        "signals": {k: v for k, v in signals.items() if k != "n_items"},
-        "step": {"type": step["step_type"]},
-    }
-    if prev_assistant:
-        state["previous_assistant"] = prev_assistant[-240:]
+    """Strictly bounded decision dossier; never reused as execution context."""
+    state = {"task": task, "step": step["step_type"]}
+    if signals.get("has_image"):
+        state["image"] = True
+    if step["step_type"] != "user_turn" and prev_assistant:
+        state["intent_tail"] = prev_assistant[-INTENT_CHARS:]
     if step["step_type"] == "tool_step":
-        state["step"]["last_tool_output_tail"] = step["digest"]
-        if step.get("tool_call"):
-            state["step"]["tool_call"] = step["tool_call"]
+        if step["digest"]:
+            state["tool_result_tail"] = step["digest"]
+        if step.get("tool_call", {}).get("name"):
+            state["tool"] = step["tool_call"]["name"]
     return state
 
 
@@ -605,70 +582,14 @@ TANDEM_GLYPHS = {
 }
 
 
-def turn_scope(payload, task):
-    """Conversation identity of this call: the client's prompt_cache_key when sent.
-
-    Codex sets prompt_cache_key to the thread it is serving, so two threads never
-    share a turn. A client that sends none is keyed by its ask instead.
-    """
+def cache_scope(payload, task):
+    """Non-reversible session id for cache telemetry; raw cache keys never log."""
     raw = payload.get("prompt_cache_key")
     if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    return "task:" + hashlib.sha1((task or "").encode("utf-8")).hexdigest()[:16]
-
-
-def _prune_turns(now):
-    """Drop expired turns, then the oldest beyond the bound. Caller holds the lock."""
-    for scope in [s for s, e in _TURNS.items() if e["expires"] <= now]:
-        _TURNS.pop(scope, None)
-    if len(_TURNS) > TURN_MAX:
-        excess = len(_TURNS) - TURN_MAX
-        for scope, _entry in sorted(_TURNS.items(), key=lambda kv: kv[1]["opened"])[:excess]:
-            _TURNS.pop(scope, None)
-
-
-def turn_continues(entry, task, step, n_items, now):
-    """Does this call belong to the turn `entry` already routed?
-
-    A tool step, a retry, or any call not ending on a user message continues the
-    turn. A call ending on a user message continues it too when it brings no new
-    ask: the same ask again (a re-delivery), or an input that did not grow (a
-    compaction that replaced the history with a checkpoint). A new ask in a
-    thread that grew since the turn opened is a new turn.
-    """
-    if entry["expires"] <= now:
-        return False
-    if step.get("step_type") != "user_turn":
-        return True
-    if (task or "") == entry["task"] and now - entry["opened"] <= TURN_REPLAY_WINDOW:
-        return True
-    return n_items <= entry["n_items"]
-
-
-def turn_route_lookup(scope, task, step, n_items, now=None):
-    """The route this turn runs on, or None when this call opens a new turn."""
-    now = time.time() if now is None else now
-    with _TURNS_LOCK:
-        _prune_turns(now)
-        entry = _TURNS.get(scope)
-        if entry is None or not turn_continues(entry, task, step, n_items, now):
-            return None
-        return dict(entry["route"])
-
-
-def turn_route_remember(scope, task, route, n_items, now=None):
-    """Open (or refresh) the turn's route: its continuations read this entry."""
-    now = time.time() if now is None else now
-    with _TURNS_LOCK:
-        _TURNS[scope] = {"task": task or "", "route": dict(route), "n_items": n_items,
-                         "opened": now, "expires": now + TURN_TTL}
-        _prune_turns(now)
-
-
-def reset_turn_routes():
-    """Forget every open turn (tests, and a manual reset after a policy edit)."""
-    with _TURNS_LOCK:
-        _TURNS.clear()
+        source = "prompt:" + raw.strip()
+    else:
+        source = "task:" + (task or "")
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 def route_label(model):
@@ -1191,21 +1112,9 @@ class Handler(BaseHTTPRequestHandler):
         jev_ms = None
         decision = None
         jev_usage = None
-        sticky = False
-        # One decision per turn: the first call opens the route, every
-        # continuation of the same turn reuses it (see turn_route_lookup).
-        scope = turn_scope(payload, task)
-        n_items = signals.get("n_items") or 0
-        held = None if os.path.exists(OFF_PATH) else turn_route_lookup(
-            scope, task, step, n_items)
+        scope = cache_scope(payload, task)
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, "default", "off"
-        elif held is not None:
-            sticky = True
-            model, effort, speed = held["model"], held["effort"], held["speed"]
-            gate = held["gate"]
-            tier, depth, conf = held["tier"], held["depth"], held["conf"]
-            decision = held["decision"]
         else:
             key = load_key()
             if key and (task or step.get("digest") or signals.get("has_image")):
@@ -1228,10 +1137,6 @@ class Handler(BaseHTTPRequestHandler):
                 jev_ms = int((time.time() - jt0) * 1000)
             else:
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
-            turn_route_remember(scope, task, {
-                "model": model, "effort": effort, "speed": speed, "gate": gate,
-                "tier": tier, "depth": depth, "conf": conf, "decision": decision,
-            }, n_items)
 
         would = None
         if os.path.exists(SHADOW_PATH):
@@ -1338,7 +1243,10 @@ class Handler(BaseHTTPRequestHandler):
             "speed": speed,
             "native": native_model,
             "dry": dry_reason,
-            "sticky": sticky,
+            "routing_scope": "call",
+            "cache_scope": scope,
+            "cache_key_present": isinstance(payload.get("prompt_cache_key"), str)
+                                 and bool(payload["prompt_cache_key"].strip()),
             "retried": retried,
             "fallback": fallback,
             "jev_ms": jev_ms,

@@ -59,6 +59,36 @@ class Usage(unittest.TestCase):
             self.assertAlmostEqual(report.turn_cost(model, speed="fast"),
                                    2 * report.turn_cost(model, speed="default"))
 
+    def test_prompt_cache_is_measured_per_session_and_model(self):
+        entries = [
+            {"cache_scope": "session-a", "native": j.LUNA, "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 1000, "cached_input_tokens": 800},
+            }]},
+            {"cache_scope": "session-a", "native": j.SOL, "attempts": [{
+                "model": j.SOL,
+                "usage": {"input_tokens": 2000, "cached_input_tokens": 0},
+            }]},
+            {"cache_scope": "session-a", "native": j.LUNA, "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 3000, "cached_input_tokens": 2400},
+            }]},
+            {"cache_scope": "session-b", "native": j.ASTRA, "attempts": [{
+                "model": j.ASTRA, "usage": None,
+            }]},
+        ]
+        cache = report.prompt_cache_usage(entries)
+        self.assertEqual(cache["tracked_sessions"], 2)
+        self.assertEqual(cache["route_switches"], 2)
+        self.assertEqual(cache["model_revisits"], 1)
+        self.assertEqual(cache["observed_attempts"], 3)
+        self.assertEqual(cache["unknown_attempts"], 1)
+        self.assertEqual(cache["hit_attempts"], 2)
+        self.assertEqual(cache["cached_share_pct"], 53.3)
+        self.assertEqual(cache["by_model"][j.LUNA]["sessions"], 1)
+        self.assertEqual(cache["by_model"][j.LUNA]["hit_rate_pct"], 100.0)
+        self.assertEqual(cache["by_model"][j.SOL]["cached_share_pct"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

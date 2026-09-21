@@ -276,13 +276,21 @@ class JevTaskInput(unittest.TestCase):
         long_thread = self.state(history + [assistant, self.user_item(self.ASK)])
         self.assertEqual(short, long_thread)
 
+    def test_a_user_turn_contains_no_empty_or_historical_fields(self):
+        assistant = {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "Old answer"}]}
+        self.assertEqual(
+            self.state([assistant, self.user_item(self.ASK)]),
+            {"task": self.ASK, "step": "user_turn"},
+        )
+
     def test_only_the_last_tool_output_travels_and_only_as_a_digest(self):
         output = {"type": "function_call_output", "output": "ok\n" + ("ligne\n" * 5_000)}
         state = self.state([self.user_item(self.ASK), output])
-        tail = state["step"]["last_tool_output_tail"]
-        self.assertEqual(state["step"]["type"], "tool_step")
+        tail = state["tool_result_tail"]
+        self.assertEqual(state["step"], "tool_step")
         self.assertEqual(len(tail), jev.DIGEST_CHARS)
-        self.assertNotIn("contains_error", state["step"])
+        self.assertNotIn("contains_error", state)
 
     def test_the_tool_name_is_linked_by_call_id_without_sending_arguments(self):
         state = self.state([
@@ -291,14 +299,15 @@ class JevTaskInput(unittest.TestCase):
              "name": "exec_command", "arguments": "private arguments"},
             {"type": "function_call_output", "call_id": "call_1", "output": "done"},
         ])
-        self.assertEqual(state["step"]["tool_call"], {"name": "exec_command"})
+        self.assertEqual(state["tool"], "exec_command")
         self.assertNotIn("private arguments", json.dumps(state))
 
     def test_the_assistant_side_is_bounded(self):
         assistant = {"type": "message", "role": "assistant",
                      "content": [{"type": "output_text", "text": "a" * 4_000}]}
-        state = self.state([self.user_item(self.ASK), assistant])
-        self.assertEqual(len(state["previous_assistant"]), 240)
+        output = {"type": "function_call_output", "output": "done"}
+        state = self.state([self.user_item(self.ASK), assistant, output])
+        self.assertEqual(len(state["intent_tail"]), jev.INTENT_CHARS)
 
 
 if __name__ == "__main__":

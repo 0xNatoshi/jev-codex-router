@@ -80,6 +80,7 @@ for the distinction between the built-in endpoint override and custom providers.
   `text/event-stream; charset=utf-8` on stream relays.
 - `stream: true` is forced upstream (the edge requires it); non-stream callers
   get the final response object assembled from the SSE stream.
-- One Jev decision per request (≈0.6 s, included in total latency). Tool-loop
-  continuations are re-classified on the same last-user text; they land on the
-  same tier in practice, and everything is logged for tuning.
+- One compact Jev decision per request (included in total latency). Tool-loop
+  continuations are re-classified from the active task and latest bounded step
+  evidence, so the model may change between sub-actions. The canonical request
+  and `prompt_cache_key` remain unchanged for the selected model.

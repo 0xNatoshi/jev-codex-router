@@ -1,12 +1,16 @@
 """Regression checks for joint routing and provider answer validation."""
 import copy
+import json
 import unittest
 
 import jev_server as jev
-from routing_policy import ROUTE_PAIRS, decision_from_answers
+from routing_policy import QUESTIONS, ROUTE_PAIRS, decision_from_answers, route_choice
 
 
 class JointPolicy(unittest.TestCase):
+    def test_the_repeated_contract_stays_compact(self):
+        self.assertLessEqual(len(json.dumps(QUESTIONS, separators=(",", ":"))), 1050)
+
     def test_every_valid_pair_survives_confidence_and_step_metadata(self):
         for model, effort in ROUTE_PAIRS.values():
             for confidence in (None, 0.0, 0.2, 0.5, 1.0):
@@ -18,7 +22,7 @@ class JointPolicy(unittest.TestCase):
                                          (model, effort, "default", "apply"))
 
     def answer(self, choice=None):
-        choice = choice or f"{jev.LUNA}:low"
+        choice = choice or route_choice(jev.LUNA, "low")
         probabilities = {key: 0.8 / (len(ROUTE_PAIRS) - 1) for key in ROUTE_PAIRS}
         probabilities[choice] = 0.2
         return {"route": {"choice": choice, "confidence": 0.01,
@@ -26,7 +30,7 @@ class JointPolicy(unittest.TestCase):
 
     def test_a_diffuse_valid_distribution_does_not_force_sol(self):
         for model in jev.TIERS:
-            result = decision_from_answers(self.answer(f"{model}:low"))
+            result = decision_from_answers(self.answer(route_choice(model, "low")))
             self.assertEqual(result["model"], model)
             self.assertEqual(result["effort"], "low")
             self.assertEqual(result["confidence"], 0.01)
@@ -44,10 +48,10 @@ class JointPolicy(unittest.TestCase):
         base = self.answer()
         for value in (-0.5, float("nan"), float("inf"), True, "0.2"):
             answer = copy.deepcopy(base)
-            answer["route"]["probabilities"][f"{jev.LUNA}:low"] = value
+            answer["route"]["probabilities"][route_choice(jev.LUNA, "low")] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 decision_from_answers(answer)
-        for probabilities in ({}, {f"{jev.LUNA}:low": 1.0},
+        for probabilities in ({}, {route_choice(jev.LUNA, "low"): 1.0},
                               dict.fromkeys(ROUTE_PAIRS, 0.0)):
             answer = copy.deepcopy(base)
             answer["route"]["probabilities"] = probabilities
@@ -56,7 +60,7 @@ class JointPolicy(unittest.TestCase):
 
     def test_choice_must_agree_with_the_distribution(self):
         answer = self.answer()
-        answer["route"]["choice"] = f"{jev.ASTRA}:high"
+        answer["route"]["choice"] = route_choice(jev.ASTRA, "high")
         with self.assertRaises(ValueError):
             decision_from_answers(answer)
 

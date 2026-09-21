@@ -42,7 +42,8 @@ class ReplayPolicy(unittest.TestCase):
                  mock.patch.object(backtest, "RESULT_PATH", str(result)), \
                  mock.patch.object(backtest.poc, "load_key", return_value="fixture"), \
                  mock.patch.object(backtest.poc, "post_json", return_value={"answers": {
-                     "route": {"choice": f"{routing_policy.LUNA}:low", "confidence": 0.1},
+                     "route": {"choice": routing_policy.route_choice(
+                         routing_policy.LUNA, "low"), "confidence": 0.1},
                  }}) as judge, \
                  mock.patch("sys.argv", ["backtest"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(backtest.main(), 0)

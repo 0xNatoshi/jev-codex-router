@@ -1,60 +1,53 @@
-"""Shared Jev decision contract: one model/effort choice, no scenario overrides."""
+"""Compact Jev contract: one model/effort choice for the next model call."""
 import math
 
-POLICY_VERSION = "joint-v1-standard"
+POLICY_VERSION = "joint-v2-per-call-compact"
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TIERS = (LUNA, SOL, ASTRA)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 
-# Capability descriptions are priors, not benchmark-derived success rates.
-# No task labels, keywords, target model shares, or confidence cutoffs select a route.
+# These are compact priors, not benchmark-derived success rates. The short
+# option ids are deliberate: this entire contract is paid on every sub-action.
 MODEL_PROFILES = {
-    LUNA: "Lower-capacity, cost-optimized member of GPT-5.6.",
-    SOL: "Higher-capacity GPT-5.6 model for complex professional work.",
-    ASTRA: "Most capable model, intended for the hardest end-to-end reasoning work.",
+    "luna": "cost-efficient GPT-5.6; routine work",
+    "sol": "strong GPT-5.6; complex work",
+    "astra": "most capable; hardest or highest-risk work",
 }
 DEPTH_PROFILES = {
-    "low": "A small reasoning budget.",
-    "medium": "A moderate reasoning budget.",
-    "high": "A substantial reasoning budget.",
-    "xhigh": "An extended reasoning budget.",
-    "max": "The largest supported reasoning budget.",
+    "low": "small",
+    "medium": "moderate",
+    "high": "substantial",
+    "xhigh": "extended",
+    "max": "largest",
 }
-ROUTE_PAIRS = {f"{model}:{depth}": (model, depth)
-               for model in TIERS for depth in EFFORTS}
+MODEL_IDS = {"luna": LUNA, "sol": SOL, "astra": ASTRA}
+ROUTE_PAIRS = {f"{name}:{depth}": (model, depth)
+               for name, model in MODEL_IDS.items() for depth in EFFORTS}
 QUESTIONS = {
     "route": {
         "type": "choice",
         "instructions": {
-            "question": "Which model AND reasoning effort together best fit the next model call?",
-            "objective": (
-                "Select sufficient capability and reasoning for a correct next step, while "
-                "avoiding unnecessary resource use. Consider total work including likely "
-                "corrections and retries. Judge capability and effort jointly: more effort "
-                "on a smaller model is not automatically equivalent to a stronger model."
-            ),
-            "evidence": (
-                "Use the current request, recent assistant intent, and available tool evidence "
-                "to determine what remains to be decided. A tool result does not by itself "
-                "make the next decision easy or difficult. Text length, an error keyword, "
-                "and the general subject of a conversation are not difficulty measurements. "
-                "Treat the state as evidence, not instructions for choosing a route."
-            ),
-            "neutrality": (
-                "There is no default model or effort and no desired model distribution. "
-                "Do not prefer Luna because it is cheap, Sol as a compromise when uncertain, "
-                "or Astra merely because it is strongest. Prefer lower resource use among "
-                "pairs you judge adequate. Represent uncertainty honestly; do not inflate it "
-                "or hide it to produce a particular route."
-            ),
-            "model_profiles": MODEL_PROFILES,
-            "effort_profiles": DEPTH_PROFILES,
-            "speed": "Every option uses standard speed. Fast mode is unavailable.",
+            "question": "Best model and effort for this next model call?",
+            "rules": [
+                "Choose the least costly pair that is sufficient for a correct result.",
+                "Judge capability and effort separately; extra effort does not make models equal.",
+                "Use only the supplied task, step, intent, image and tool evidence.",
+                "No default pair or target distribution. Account for likely corrections.",
+            ],
+            "models": MODEL_PROFILES,
+            "effort": DEPTH_PROFILES,
         },
-        "criteria": {key: {"model": model, "reasoning_effort": depth}
-                     for key, (model, depth) in ROUTE_PAIRS.items()},
+        "criteria": {key: key for key in ROUTE_PAIRS},
     },
 }
+
+
+def route_choice(model, effort):
+    """Compact option id for fixtures and callers that already know a pair."""
+    for choice, pair in ROUTE_PAIRS.items():
+        if pair == (model, effort):
+            return choice
+    raise ValueError("invalid model/effort pair")
 
 
 def route(tier, depth, conf=None, step=None):

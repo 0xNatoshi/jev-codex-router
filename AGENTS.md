@@ -207,18 +207,21 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `joint-v1-standard`: Jev chooses one of 15 model/effort
-  pairs **per turn** — the call that opens a turn (a user message) decides, and
-  every continuation of that turn (tool steps, retries, the call that follows a
-  mid-turn compaction) reuses that route. A new user ask opens the next turn.
-  All tiers use adaptive effort and standard speed; never force
-  Luna to max or enable Fast mode.
+- The current policy is `joint-v2-per-call-compact`: Jev chooses one of 15
+  model/effort pairs for every model call, including tool continuations and
+  post-compaction calls. Provider retries inside one call keep that decision.
+  The selected model always receives the complete canonical request and the
+  original `prompt_cache_key`; Jev receives only the bounded decision dossier.
+  Cache reuse is measured per `(hashed session, model)`, never assumed across
+  models. All tiers use adaptive effort and standard speed; never force Luna to
+  max or enable Fast mode.
 - No scenario overrides, target model shares, or confidence threshold may
   replace a valid Jev choice with Sol, Luna or Astra. Confidence is diagnostic.
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run
-  `python3 server/report_routing.py --days 7` for native-only credit estimates;
-  unknown usage remains unknown and reasoning tokens are not counted twice.
+  `python3 server/report_routing.py --days 7` for native-only credit estimates
+  and observed prompt-cache reads by model/session; unknown usage remains
+  unknown and reasoning tokens are not counted twice.
 - `BACKTEST.md` documents the old policy's fixed-token simulation. It is not a
   measurement of current quota savings or result quality.

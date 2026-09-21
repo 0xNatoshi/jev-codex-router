@@ -146,6 +146,90 @@ def measured_usage(entries):
     return report
 
 
+def prompt_cache_usage(entries):
+    """Observed cache reads plus model switching, grouped by private session hash."""
+    total_input = total_cached = observed = unknown = hits = 0
+    rows = {}
+    scopes = set()
+    last_model = {}
+    seen_models = {}
+    switches = revisits = 0
+
+    for entry in entries:
+        scope = entry.get("cache_scope")
+        selected = entry.get("native")
+        if isinstance(scope, str) and scope:
+            scopes.add(scope)
+            if selected in CREDIT_RATES:
+                previous = last_model.get(scope)
+                seen = seen_models.setdefault(scope, set())
+                if previous is not None and selected != previous:
+                    switches += 1
+                    if selected in seen:
+                        revisits += 1
+                seen.add(selected)
+                last_model[scope] = selected
+
+        attempts = entry.get("attempts")
+        if not isinstance(attempts, list):
+            continue
+        for attempt in attempts:
+            model = attempt.get("model")
+            if model not in CREDIT_RATES:
+                continue
+            row = rows.setdefault(model, {
+                "observed_attempts": 0, "unknown_attempts": 0, "hit_attempts": 0,
+                "input_tokens": 0, "cached_input_tokens": 0, "sessions": set(),
+            })
+            usage = attempt.get("usage")
+            inp = usage.get("input_tokens") if isinstance(usage, dict) else None
+            cached = usage.get("cached_input_tokens") if isinstance(usage, dict) else None
+            if (isinstance(inp, bool) or not isinstance(inp, int) or inp < 0
+                    or isinstance(cached, bool) or not isinstance(cached, int)
+                    or cached < 0 or cached > inp):
+                unknown += 1
+                row["unknown_attempts"] += 1
+                continue
+            observed += 1
+            total_input += inp
+            total_cached += cached
+            row["observed_attempts"] += 1
+            row["input_tokens"] += inp
+            row["cached_input_tokens"] += cached
+            if cached:
+                hits += 1
+                row["hit_attempts"] += 1
+            if isinstance(scope, str) and scope:
+                row["sessions"].add(scope)
+
+    for row in rows.values():
+        row["sessions"] = len(row["sessions"])
+        row["hit_rate_pct"] = (
+            round(100.0 * row["hit_attempts"] / row["observed_attempts"], 1)
+            if row["observed_attempts"] else None
+        )
+        row["cached_share_pct"] = (
+            round(100.0 * row["cached_input_tokens"] / row["input_tokens"], 1)
+            if row["input_tokens"] else None
+        )
+
+    return {
+        "tracked_sessions": len(scopes),
+        "route_switches": switches,
+        "model_revisits": revisits,
+        "observed_attempts": observed,
+        "unknown_attempts": unknown,
+        "hit_attempts": hits,
+        "hit_rate_pct": round(100.0 * hits / observed, 1) if observed else None,
+        "input_tokens": total_input,
+        "cached_input_tokens": total_cached,
+        "cached_share_pct": (
+            round(100.0 * total_cached / total_input, 1) if total_input else None
+        ),
+        "by_model": rows,
+    }
+
+
 def price_key(model):
     """The price row a served model is costed with, or None when unpriced.
 
@@ -373,6 +457,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         "cost": cost,
         "native_cost": native_cost,
         "measured_usage": measured_usage(entries),
+        "prompt_cache": prompt_cache_usage(entries),
         "backtest": read_backtest(backtest_path or BACKTEST_STATE),
     }
 
@@ -477,6 +562,30 @@ def render_text(rep):
                   f"all-sol {measured['all_sol_credits']} · all-astra {measured['all_astra_credits']}",
                   "  Counterfactuals keep observed tokens fixed; reasoning is already in output. "
                   "These are rate-card estimates, not account debits or equal-quality proof."]
+    cache = rep["prompt_cache"]
+    lines += ["", "Prompt cache — observed native attempts",
+              f"  {cache['tracked_sessions']} hashed sessions · "
+              f"{cache['route_switches']} model switches · "
+              f"{cache['model_revisits']} returns to a previously used model",
+              f"  {cache['hit_attempts']}/{cache['observed_attempts']} attempts with cache reads "
+              f"({fmt(cache['hit_rate_pct'])}%) · "
+              f"{fmt(cache['cached_input_tokens'])}/{fmt(cache['input_tokens'])} input tokens cached "
+              f"({fmt(cache['cached_share_pct'])}%) · {cache['unknown_attempts']} unknown"]
+    if cache["by_model"]:
+        cache_rows = []
+        for model, row in sorted(cache["by_model"].items()):
+            cache_rows.append([
+                SHORT.get(model, model),
+                row["sessions"],
+                f"{row['hit_attempts']}/{row['observed_attempts']}",
+                f"{fmt(row['hit_rate_pct'])}%",
+                f"{fmt(row['cached_share_pct'])}%",
+                row["unknown_attempts"],
+            ])
+        lines += [table(
+            ["model", "sessions", "hits/seen", "hit rate", "cached input", "unknown"],
+            cache_rows,
+        )]
     native = rep["native_cost"]
     lines += ["", "Native Codex calls only — fixed-volume API-rate proxy, not measured quota",
               f"  {native['turns']} calls · {fmt(native['routed_units'])} units · "

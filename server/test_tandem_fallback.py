@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import jev_server as jev
+from routing_policy import route_choice
 
 COMPLETED = (
     b'event: response.completed\n'
@@ -175,11 +176,9 @@ class TandemHandoff(unittest.TestCase):
                                          (jev.ASTRA, "xhigh", "fast")):
             with self.subTest(tier=tier, depth=depth), mock.patch.object(
                 jev, "call_jev_routed", return_value={"answers": {
-                    "route": {"choice": f"{tier}:{depth}", "confidence": 0.1},
+                    "route": {"choice": route_choice(tier, depth), "confidence": 0.1},
                 }}
             ):
-                # Each case is its own turn: routing is sticky per turn, so the
-                # same ask would (correctly) keep the first case's route.
                 status, body = self.call(service_tier=client_speed,
                                          reasoning={"effort": "max", "summary": "auto"},
                                          input=[{
@@ -212,7 +211,7 @@ class TandemHandoff(unittest.TestCase):
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
         with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": f"{jev.ASTRA}:low", "confidence": 0.2},
+            "route": {"choice": route_choice(jev.ASTRA, "low"), "confidence": 0.2},
         }}) as judge:
             status, body = self.call(input="You are creating a lossy continuation checkpoint")
         self.assertEqual(status, 200, body)
@@ -289,7 +288,7 @@ class TandemHandoff(unittest.TestCase):
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
         with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": f"{jev.LUNA}:low", "confidence": 0.9},
+            "route": {"choice": route_choice(jev.LUNA, "low"), "confidence": 0.9},
         }}):
             status, body = self.call(reasoning={"effort": "high"})
         self.assertEqual(status, 200)
