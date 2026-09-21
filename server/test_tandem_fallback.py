@@ -145,12 +145,21 @@ class TandemHandoff(unittest.TestCase):
 
     def test_a_refused_tandem_call_is_retried_on_the_sibling(self):
         Edge.refuse = (jev.GO_FRONTIER,)
-        status, body = self.call(service_tier="priority")
+        canonical = [
+            {"type": "message", "role": "user", "content": "Original evidence."},
+            {"type": "function_call", "call_id": "xmesh", "name": "xmesh_inspect",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "xmesh", "output": "full result"},
+            {"type": "message", "role": "user", "content": "Continue"},
+        ]
+        status, body = self.call(service_tier="priority", input=canonical)
         self.assertEqual(status, 200, body)
         self.assertEqual(
             [model for model, _effort in Edge.attempts],
             [jev.GO_FRONTIER, jev.GO_STANDARD],
         )
+        self.assertEqual([payload["input"] for payload in Edge.payloads],
+                         [canonical, canonical])
         # The depth survives the switch, and both attempts carry a rung the Go
         # models declare.
         self.assertEqual({effort for _model, effort in Edge.attempts}, {"high"})

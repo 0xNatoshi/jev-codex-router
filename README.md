@@ -26,16 +26,22 @@ Codex ──▶ Codex Router (:4202)
                                      │
                                      ▼
                           jev_server.py (127.0.0.1:4319)
-                            │ 1. classify the turn with Jev
-                            │ 2. apply the routing policy
-                            │    (model, reasoning.effort, service_tier)
-                            ▼
-                          local caller edge (shared native session)
-                            └──▶ luna / sol / astra on the ChatGPT backend
+                            ├─ compact decision state ─▶ Jev
+                            │                           └─ model + effort
+                            │
+                            └─ canonical Codex replay + decision
+                               └─▶ local caller edge (shared native session)
+                                    └─▶ luna / sol / astra
 ```
 
 - **Responses in, Responses out** — no format conversion; the SSE stream is
   relayed verbatim, so tool calls, reasoning and compaction behave natively.
+- **Two independent projections** — Jev sees only the bounded decision state.
+  The executing model receives the complete canonical replay held by Codex:
+  instructions, history or compaction handoff, tool calls and tool results.
+  The upstream Codex Router must therefore exempt the exact `jev/auto` route
+  from conversation windowing and tool-result aging; those optimizations would
+  otherwise destroy context before this server could relay it.
 - **Fail-open** — any Jev error keeps the turn alive (safe fallback route).
 - **Kill switch** — a sentinel file routes without Jev, instantly.
 - **Codex-dry tandem** — when native (ChatGPT) usage is exhausted (sentinel
@@ -145,7 +151,9 @@ that follows a mid-turn compaction — reuses it, so the serving model cannot fl
 mid-turn. A new user ask opens the next turn; an entry that reused the turn's
 route carries `sticky: true` and the `gate` of the decision that opened it. The
 compact projection sent to Jev (task, signals, tool digest) is judgement input
-only: the executing model always receives the caller's request untouched.
+only: it is never reused as an execution prompt. The executing model always
+receives the caller's canonical request, with only the selected model, reasoning
+effort, standard service tier and required streaming flag applied to the relay.
 
 ## Ask surface (`POST /ask`)
 

@@ -249,15 +249,25 @@ class StickyTurnEndToEnd(unittest.TestCase):
         self.assertEqual([r["sticky"] for r in self.records], [False, True])
 
     def test_the_jev_projection_never_becomes_the_execution_context(self):
-        history = [message("user", "audit the routing policy"),
-                   tool_call("c0"), tool_step("c0", "ok")]
+        history = [
+            message("user", "Inspect the original tweet about launch timing."),
+            message("assistant", "I will inspect the evidence."),
+            tool_call("xmesh-0", "xmesh_inspect"),
+            tool_step("xmesh-0", "XMESH historical action result: post 1842 was opened."),
+            message("user", "[Earlier conversation history was compacted: keep the tweet and XMESH evidence.]"),
+            message("user", "Continue from the existing evidence."),
+        ]
         sent = payload_for(history)
-        with self.decide():
+        with self.decide() as judge:
             self.call(sent)
+        decision_state = judge.call_args.args[1]
         forwarded = Edge.payloads[-1]
         self.assertEqual(forwarded["input"], sent["input"])
         self.assertEqual(forwarded["instructions"], sent["instructions"])
         self.assertEqual(forwarded["tools"], sent["tools"])
+        self.assertEqual(decision_state["task"], "Continue from the existing evidence.")
+        self.assertNotIn("original tweet", json.dumps(decision_state))
+        self.assertNotIn("XMESH historical action", json.dumps(decision_state))
         # The compact judgement payload (task, signals, step, previous_assistant)
         # is never injected into what the executing model reads.
         for key in ("task", "signals", "step", "previous_assistant"):
