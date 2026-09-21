@@ -10,7 +10,8 @@ conversion: Responses in, Responses out, SSE relayed verbatim.
 Routing policy: Jev independently classifies the mandatory-Astra policy, chooses
 one capability tier and one thinking depth for every call, in a single typed
 request. Code combines those answers and forces Astra for pre-project
-architecture or code/security/performance review. Every pair uses standard
+architecture, independent final code review or risk-focused review. Routine
+quality checkpoints use ordinary capability routing. Every pair uses standard
 speed. Confidence is logged without changing other valid choices. There are no
 keyword overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.

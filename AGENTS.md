@@ -209,13 +209,17 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v6-intent-aware`: one System One request asks
+- The current policy is `split-v7-review-stages`: one System One request asks
   three independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier and reasoning effort — for every model call, including
   tool continuations and post-compaction calls. Pre-project software/project
-  architecture and code, security or performance review force Astra while
+  architecture, independent final code review and risk-focused review force Astra while
   preserving Jev's independently selected effort. Provider retries inside one
   call keep that decision.
+  Routine in-progress quality checkpoints, score comparisons and fixes to established
+  findings use normal routing. Good scores never waive a required final/risk review.
+  The router does not run `jev-review` or create an independent reviewer; quality
+  scoring and blind reviewer context must be handled by the calling workflow.
   The selected model always receives the complete canonical request and the
   original cache controls; Jev receives only the bounded decision dossier. A
   context-dependent short ask also gets one bounded active-task summary. Cache

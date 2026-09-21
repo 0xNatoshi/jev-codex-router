@@ -1,7 +1,7 @@
 """Compact Jev contract: model, effort and mandatory-frontier policy."""
 import math
 
-POLICY_VERSION = "split-v6-intent-aware"
+POLICY_VERSION = "split-v7-review-stages"
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TERRA = "gpt-5.6-terra"
 TIERS = (LUNA, TERRA, SOL, ASTRA)
@@ -10,12 +10,15 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 MODEL_IDS = {"luna": LUNA, "terra": TERRA, "sol": SOL, "astra": ASTRA}
 ASTRA_POLICY = {
     "astra": (
-        "The remaining work itself requires project architecture design or substantive "
-        "code, security or performance review."
+        "Remaining work is project architecture, independent final code review, or "
+        "risk-focused review of security, auth/permissions, concurrency, migrations, "
+        "public API compatibility or material performance risks. "
+        "A good checkpoint score never waives a required final/risk review."
     ),
     "normal": (
-        "Ordinary implementation, tests, UX improvements, administration or reporting. "
-        "Not review merely because code is involved. No unfinished architecture/review analysis."
+        "Implementation, tests, routine in-progress quality checkpoints, score comparison, "
+        "fixing established findings, administration or reporting. "
+        "No remaining final/risk review or architecture. Review wording alone is insufficient."
     ),
 }
 MODEL_PROFILES = {

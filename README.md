@@ -61,8 +61,11 @@ The shared contract in `server/routing_policy.py` gives Jev three independent
 Choice questions in one request: whether the next call falls under the mandatory
 Astra policy, the least expensive sufficient capability tier (Luna, Terra, Sol or
 Astra), and the minimum sufficient thinking depth (low through max). The first
-choice covers pre-project software/project architecture and code, security or
-performance review. Code forces Astra when that policy choice is positive,
+choice covers project architecture, independent final code review and risk-focused
+review (security, auth/permissions, concurrency, migrations, public API compatibility
+or material performance risks). Routine in-progress quality checkpoints, comparing
+scores and fixing established findings use ordinary capability routing; the word
+"review" alone does not force Astra. Code forces Astra when that policy choice is positive,
 regardless of the ordinary tier choice; the independently selected effort is
 preserved. Every pair uses standard speed, overriding an incoming Fast setting,
 including retries and bypass modes.
@@ -81,11 +84,21 @@ reasoning. These profiles are routing priors, not measured capability guarantees
 Terra attempts are counted as native in reports; its ChatGPT credit estimate
 remains unknown until a verified credit rate is configured.
 
-Policy `split-v6-intent-aware` judges remaining work rather than inheriting a
+Policy `split-v7-review-stages` judges remaining work rather than inheriting a
 completed review's category. Explicit mechanical follow-through can use Luna;
 implied intent, underspecified goals and autonomous investigation favor Sol.
 The objective includes correction and clarification costs. There is no
 keyword-based override or automatic model floor on conversation openings.
+
+Continuous quality signals and independent reviews are complementary. A favorable
+Jev quality score never cancels a required final/risk review; routing confidence
+is not a code-quality score. This router classifies the next model call: it does
+not install or invoke `jev-review`, run a scoring loop, or create a separate
+reviewer. For a workflow using that tool, bound score-driven corrections to one
+justified iteration (a second only with new evidence), keep tests authoritative,
+and give the independent Astra reviewer the task and code before comparing its
+findings with Jev's scores. Review isolation belongs to that workflow; the router
+still forwards the full canonical conversation and does not strip scores from it.
 
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,

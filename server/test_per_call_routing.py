@@ -189,6 +189,31 @@ class PerCallEndToEnd(unittest.TestCase):
         self.assertEqual(self.records[-1]["gate"], "astra_policy")
         self.assertEqual(self.records[-1]["base_tier"], jev.TERRA)
 
+    def test_checkpoint_then_final_review_then_fix_routes_each_phase(self):
+        # Stubbed semantic decisions test wiring, not Jev classification accuracy.
+        history = [message("user", "Implement the change, then get an independent final review.")]
+        phases = [
+            ("Run an in-progress quality checkpoint.", answer(jev.TERRA, "medium")),
+            ("Scores look good; independent final review is still required.",
+             answer(jev.TERRA, "high", astra_required=True)),
+            ("Final review complete. Fix its established finding.",
+             answer(jev.SOL, "high")),
+        ]
+        with mock.patch.object(
+            jev, "call_jev_routed", side_effect=[choice for _, choice in phases]
+        ) as judge:
+            for intent, _ in phases:
+                history = history + [message("user", intent)]
+                self.call(payload_for(history))
+                self.assertEqual(Edge.payloads[-1]["input"], history)
+        self.assertEqual(judge.call_count, 3)
+        self.assertEqual(
+            [p["model"] for p in Edge.payloads], [jev.TERRA, jev.ASTRA, jev.SOL]
+        )
+        self.assertEqual(
+            [r["gate"] for r in self.records], ["apply", "astra_policy", "apply"]
+        )
+
     def test_compaction_gets_a_new_decision_and_full_handoff(self):
         opening = [message("user", "refactor the router tests"),
                    tool_call("c0"), tool_step("c0", "ok")]
