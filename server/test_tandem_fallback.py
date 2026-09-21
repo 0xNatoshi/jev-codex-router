@@ -169,8 +169,16 @@ class TandemHandoff(unittest.TestCase):
                     "route": {"choice": f"{tier}:{depth}", "confidence": 0.1},
                 }}
             ):
+                # Each case is its own turn: routing is sticky per turn, so the
+                # same ask would (correctly) keep the first case's route.
                 status, body = self.call(service_tier=client_speed,
-                                         reasoning={"effort": "max", "summary": "auto"})
+                                         reasoning={"effort": "max", "summary": "auto"},
+                                         input=[{
+                                             "type": "message",
+                                             "role": "user",
+                                             "content": [{"type": "input_text",
+                                                          "text": f"say OK ({tier}:{depth})"}],
+                                         }])
                 self.assertEqual(status, 200, body)
                 sent = Edge.payloads[-1]
                 self.assertEqual(sent["model"], tier)

@@ -12,12 +12,22 @@ Every pair uses standard speed. Confidence is logged without changing the chosen
 model. There are no keyword/scenario overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Per-call awareness (v2): every request is classified as a fresh user turn, a
-tool-step continuation, or other. Tool-steps carry a digest of the last tool
-output and its tool name into the Jev state, so Jev routes THIS step
-(mechanical continuation, standard next action, or frontier-worthy) instead
-of re-judging the session's original prompt. On live sessions (7 days):
-~92% of model calls are tool-steps — ~74% of the money weight.
+Turn-scoped sticky routing (v4): Jev decides once per turn, not once per call.
+The first call of a turn (a user message) opens it; every continuation of that
+turn — tool steps, retries, and the call that follows a mid-turn compaction —
+reuses that route instead of asking Jev again. A new user ask opens the next
+turn. A turn that opened on a technical Jev failure keeps that fail-open route
+for its continuations too, and the next turn probes Jev again. The compact Jev
+projection (task, signals, step digest) is judgment input only: the executing
+model always receives the caller's canonical request untouched, never that
+projection. Measured on live sessions: the previous
+per-call policy spent ~92% of its model calls on tool-steps, each one paying a
+decision that could change the route mid-turn.
+
+Per-step awareness (v2): every request is classified as a fresh user turn, a
+tool-step continuation, or other, and a tool-step carries a digest of the last
+tool output and its tool name into the Jev state — the digest still only informs
+the decision that opens the turn.
 
 Input handling (v3): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
@@ -63,6 +73,7 @@ ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
 """
 import codecs
+import hashlib
 import http.client
 import json
 import os
@@ -87,11 +98,18 @@ DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
+# Turn-scoped routing: one decision opens a turn, its continuations reuse it.
+TURN_TTL = 1800.0          # a turn keeps its route for at most this long
+TURN_REPLAY_WINDOW = 90.0  # the same ask re-delivered this soon is the same turn
+TURN_MAX = 256             # bounded memory: oldest turns are dropped first
+_TURNS = {}
+_TURNS_LOCK = threading.Lock()
+
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.2"
+VERSION = "1.3"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -585,6 +603,72 @@ TANDEM_GLYPHS = {
     "deepseek-v4.1-flash": ("deepseek", "🐳"),  # Go standard (native dry)
     "glm-5.3-flash": ("glm", "✨"),             # Go frontier (native dry)
 }
+
+
+def turn_scope(payload, task):
+    """Conversation identity of this call: the client's prompt_cache_key when sent.
+
+    Codex sets prompt_cache_key to the thread it is serving, so two threads never
+    share a turn. A client that sends none is keyed by its ask instead.
+    """
+    raw = payload.get("prompt_cache_key")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return "task:" + hashlib.sha1((task or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _prune_turns(now):
+    """Drop expired turns, then the oldest beyond the bound. Caller holds the lock."""
+    for scope in [s for s, e in _TURNS.items() if e["expires"] <= now]:
+        _TURNS.pop(scope, None)
+    if len(_TURNS) > TURN_MAX:
+        excess = len(_TURNS) - TURN_MAX
+        for scope, _entry in sorted(_TURNS.items(), key=lambda kv: kv[1]["opened"])[:excess]:
+            _TURNS.pop(scope, None)
+
+
+def turn_continues(entry, task, step, n_items, now):
+    """Does this call belong to the turn `entry` already routed?
+
+    A tool step, a retry, or any call not ending on a user message continues the
+    turn. A call ending on a user message continues it too when it brings no new
+    ask: the same ask again (a re-delivery), or an input that did not grow (a
+    compaction that replaced the history with a checkpoint). A new ask in a
+    thread that grew since the turn opened is a new turn.
+    """
+    if entry["expires"] <= now:
+        return False
+    if step.get("step_type") != "user_turn":
+        return True
+    if (task or "") == entry["task"] and now - entry["opened"] <= TURN_REPLAY_WINDOW:
+        return True
+    return n_items <= entry["n_items"]
+
+
+def turn_route_lookup(scope, task, step, n_items, now=None):
+    """The route this turn runs on, or None when this call opens a new turn."""
+    now = time.time() if now is None else now
+    with _TURNS_LOCK:
+        _prune_turns(now)
+        entry = _TURNS.get(scope)
+        if entry is None or not turn_continues(entry, task, step, n_items, now):
+            return None
+        return dict(entry["route"])
+
+
+def turn_route_remember(scope, task, route, n_items, now=None):
+    """Open (or refresh) the turn's route: its continuations read this entry."""
+    now = time.time() if now is None else now
+    with _TURNS_LOCK:
+        _TURNS[scope] = {"task": task or "", "route": dict(route), "n_items": n_items,
+                         "opened": now, "expires": now + TURN_TTL}
+        _prune_turns(now)
+
+
+def reset_turn_routes():
+    """Forget every open turn (tests, and a manual reset after a policy edit)."""
+    with _TURNS_LOCK:
+        _TURNS.clear()
 
 
 def route_label(model):
@@ -1107,8 +1191,21 @@ class Handler(BaseHTTPRequestHandler):
         jev_ms = None
         decision = None
         jev_usage = None
+        sticky = False
+        # One decision per turn: the first call opens the route, every
+        # continuation of the same turn reuses it (see turn_route_lookup).
+        scope = turn_scope(payload, task)
+        n_items = signals.get("n_items") or 0
+        held = None if os.path.exists(OFF_PATH) else turn_route_lookup(
+            scope, task, step, n_items)
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, "default", "off"
+        elif held is not None:
+            sticky = True
+            model, effort, speed = held["model"], held["effort"], held["speed"]
+            gate = held["gate"]
+            tier, depth, conf = held["tier"], held["depth"], held["conf"]
+            decision = held["decision"]
         else:
             key = load_key()
             if key and (task or step.get("digest") or signals.get("has_image")):
@@ -1131,6 +1228,10 @@ class Handler(BaseHTTPRequestHandler):
                 jev_ms = int((time.time() - jt0) * 1000)
             else:
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
+            turn_route_remember(scope, task, {
+                "model": model, "effort": effort, "speed": speed, "gate": gate,
+                "tier": tier, "depth": depth, "conf": conf, "decision": decision,
+            }, n_items)
 
         would = None
         if os.path.exists(SHADOW_PATH):
@@ -1237,6 +1338,7 @@ class Handler(BaseHTTPRequestHandler):
             "speed": speed,
             "native": native_model,
             "dry": dry_reason,
+            "sticky": sticky,
             "retried": retried,
             "fallback": fallback,
             "jev_ms": jev_ms,

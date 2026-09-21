@@ -208,7 +208,10 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 ## Latency & cost notes
 
 - The current policy is `joint-v1-standard`: Jev chooses one of 15 model/effort
-  pairs per call. All tiers use adaptive effort and standard speed; never force
+  pairs **per turn** — the call that opens a turn (a user message) decides, and
+  every continuation of that turn (tool steps, retries, the call that follows a
+  mid-turn compaction) reuses that route. A new user ask opens the next turn.
+  All tiers use adaptive effort and standard speed; never force
   Luna to max or enable Fast mode.
 - No scenario overrides, target model shares, or confidence threshold may
   replace a valid Jev choice with Sol, Luna or Astra. Confidence is diagnostic.

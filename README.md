@@ -139,6 +139,14 @@ Their logged Fast speed retains its surcharge instead of being repriced by the
 new policy. The old backtest is clearly labelled as a simulation. Current replay
 scripts share the live decision contract and reject a cache from another policy.
 
+Routing is turn-scoped: the call that opens a turn (a user message) gets one Jev
+decision, and every continuation of that turn — tool steps, retries, and the call
+that follows a mid-turn compaction — reuses it, so the serving model cannot flip
+mid-turn. A new user ask opens the next turn; an entry that reused the turn's
+route carries `sticky: true` and the `gate` of the decision that opened it. The
+compact projection sent to Jev (task, signals, tool digest) is judgement input
+only: the executing model always receives the caller's request untouched.
+
 ## Ask surface (`POST /ask`)
 
 The server also answers typed questions directly, for local callers that bring
