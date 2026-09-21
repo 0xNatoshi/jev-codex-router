@@ -159,7 +159,7 @@ class PerCallEndToEnd(unittest.TestCase):
         choices = [
             answer(jev.LUNA, "low"),
             answer(jev.SOL, "high"),
-            answer(jev.LUNA, "medium"),
+            answer(jev.TERRA, "medium"),
             answer(jev.ASTRA, "xhigh"),
         ]
         with mock.patch.object(jev, "call_jev_routed", side_effect=choices) as judge:
@@ -170,7 +170,7 @@ class PerCallEndToEnd(unittest.TestCase):
         self.assertEqual(judge.call_count, 4)
         self.assertEqual(
             [p["model"] for p in Edge.payloads],
-            [jev.LUNA, jev.SOL, jev.LUNA, jev.ASTRA],
+            [jev.LUNA, jev.SOL, jev.TERRA, jev.ASTRA],
         )
         self.assertEqual([r["routing_scope"] for r in self.records], ["call"] * 4)
         self.assertEqual(len({r["cache_scope"] for r in self.records}), 1)
@@ -181,13 +181,13 @@ class PerCallEndToEnd(unittest.TestCase):
         with mock.patch.object(
             jev,
             "call_jev_routed",
-            return_value=answer(jev.LUNA, "high", astra_required=True),
+            return_value=answer(jev.TERRA, "high", astra_required=True),
         ):
             self.call(sent)
         self.assertEqual(Edge.payloads[-1]["model"], jev.ASTRA)
         self.assertEqual(Edge.payloads[-1]["input"], history)
         self.assertEqual(self.records[-1]["gate"], "astra_policy")
-        self.assertEqual(self.records[-1]["base_tier"], jev.LUNA)
+        self.assertEqual(self.records[-1]["base_tier"], jev.TERRA)
 
     def test_compaction_gets_a_new_decision_and_full_handoff(self):
         opening = [message("user", "refactor the router tests"),

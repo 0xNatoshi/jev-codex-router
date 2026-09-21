@@ -7,6 +7,15 @@ import report_routing as report
 
 
 class Usage(unittest.TestCase):
+    def test_terra_attempt_is_native_but_unverified_credit_rate_stays_unknown(self):
+        result = report.measured_usage([{"attempts": [{
+            "model": j.TERRA, "speed": "default",
+            "usage": {"input_tokens": 1000, "cached_input_tokens": 500, "output_tokens": 10},
+        }]}])
+        self.assertEqual(result["native_attempts"], 1)
+        self.assertEqual(result["unknown_attempts"], 1)
+        self.assertEqual(result["priced_attempts"], 0)
+
     def test_fragmented_terminal_event_captures_only_token_counters(self):
         raw_usage = {"input_tokens": 1000, "output_tokens": 120, "total_tokens": 1120,
                      "input_tokens_details": {"cached_tokens": 900},

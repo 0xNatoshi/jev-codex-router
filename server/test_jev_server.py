@@ -142,7 +142,7 @@ class QuotaReset(unittest.TestCase):
 class DryTandem(unittest.TestCase):
     def test_frontier_steps_go_to_glm_and_the_rest_to_deepseek(self):
         self.assertEqual(jev.dry_target(jev.ASTRA, "high")[0], jev.GO_FRONTIER)
-        for tier in (jev.LUNA, jev.SOL):
+        for tier in (jev.LUNA, jev.TERRA, jev.SOL):
             self.assertEqual(jev.dry_target(tier, "high")[0], jev.GO_STANDARD)
 
     def test_the_tandem_never_receives_a_rung_its_model_cannot_serve(self):

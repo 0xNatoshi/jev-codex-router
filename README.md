@@ -31,7 +31,7 @@ Codex ──▶ Codex Router (:4202)
                             │
                             └─ canonical Codex replay + decision
                                └─▶ local caller edge (shared native session)
-                                    └─▶ luna / sol / astra
+                                    └─▶ luna / terra / sol / astra
 ```
 
 - **Responses in, Responses out** — no format conversion; the SSE stream is
@@ -45,7 +45,7 @@ Codex ──▶ Codex Router (:4202)
 - **Fail-open** — any Jev error keeps the turn alive (safe fallback route).
 - **Kill switch** — a sentinel file routes without Jev, instantly.
 - **Codex-dry tandem** — when native (ChatGPT) usage is exhausted (sentinel
-  file, or an observed 429 / usage-limit response), the triptych is replaced:
+  file, or an observed 429 / usage-limit response), the native model ladder is replaced:
   GLM (`opencode-go/glm-5.3-flash`) for frontier-tier steps, deepseek
   (`opencode-go/deepseek-v4.1-flash`) for everything else. The failed call is
   retried on the tandem, at the thinking depth Jev decided, mapped onto the Go
@@ -59,7 +59,7 @@ Codex ──▶ Codex Router (:4202)
 
 The shared contract in `server/routing_policy.py` gives Jev three independent
 Choice questions in one request: whether the next call falls under the mandatory
-Astra policy, the least expensive sufficient capability tier (Luna, Sol or
+Astra policy, the least expensive sufficient capability tier (Luna, Terra, Sol or
 Astra), and the minimum sufficient thinking depth (low through max). The first
 choice covers pre-project software/project architecture and code, security or
 performance review. Code forces Astra when that policy choice is positive,
@@ -74,9 +74,12 @@ unchanged even when options are close. Jev's conservative combined confidence
 and all three choice distributions are logged separately; neither is a measured
 probability that the selected model will successfully finish the task.
 
-Terra is intentionally not a routing candidate in this policy. Its historical
-pricing and display support remain in reporting, but live native selection is the
-Luna/Sol/Astra triptych.
+The native ladder is Luna → Terra → Sol → Astra. Terra covers routine bounded
+implementation with clear requirements, small local features, known-cause fixes
+and straightforward tests; Sol covers complex implementation and cross-file
+reasoning. These profiles are routing priors, not measured capability guarantees.
+Terra attempts are counted as native in reports; its ChatGPT credit estimate
+remains unknown until a verified credit rate is configured.
 
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,
@@ -103,7 +106,7 @@ last-message-only view.
 
 ### Codex-dry tandem — only while native usage is exhausted
 
-The triptych is the policy **unless** the ChatGPT usage window is exhausted
+The native model ladder is the policy **unless** the ChatGPT usage window is exhausted
 (manual sentinel file, or an automatic flip on a 429 / usage-limit response,
 which also retries the failed call on the tandem). While dry:
 
@@ -113,7 +116,7 @@ which also retries the failed call on the tandem). While dry:
 | `gpt-5.6-sol` / `gpt-5.6-luna` | `opencode-go/deepseek-v4.1-flash` |
 
 An automatic flip lasts until the instant the edge announced for the window
-reset, so the first call after the quota returns is served by the triptych
+reset, so the first call after the quota returns is served by the native model ladder
 again; when a refusal announces no instant it falls back to a 30-minute
 re-probe, and a week is the ceiling on anything a refusal claims. It is cleared
 by the first successful native call, and the manual sentinel file is never
@@ -122,7 +125,7 @@ auto-cleared.
 Two details keep the substitute transparent. The decided depth travels with the
 call, mapped onto the Go ladder — `low` stays `low`, `medium` and `high` become
 `high`, `xhigh` or above become `max` — because those models declare three rungs
-where the triptych exposes five, and the API forwarder clamps the value once more
+where the native model ladder exposes five, and the API forwarder clamps the value once more
 onto the route's own ladder. And a tandem call that comes back retryable
 (429/5xx) is tried once on the sibling model: opencode Go meters the two Go
 models against separate allowances and reports a spent one the same way it
@@ -148,7 +151,7 @@ python3 server/report_routing.py --days 7          # text tables (default window
 python3 server/report_routing.py --days 30 --json  # machine-readable
 ```
 
-It prints the served model distribution (luna/sol/astra, plus the Codex-dry
+It prints the served model distribution (luna/terra/sol/astra, plus the Codex-dry
 tandem when it took over: turns + %), the share of turns served by the cheapest
 tier, the share of turns held below the confidence gate, the gates encountered,
 median latency (end-to-end and Jev's own decision time), observed prompt-cache
@@ -278,7 +281,7 @@ cd <codex-router checkout>
       "provider": "jev",
       "listed": true,
       "displayName": "Jev Codex Router",
-      "description": "Auto-routing by Jev: every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
+      "description": "Auto-routing by Jev: every turn is classified and served by luna, terra, sol or astra at the thinking depth it needs.",
       "priority": 95,
       "defaultEffort": "medium",
       "reasoningLevels": [
@@ -332,7 +335,7 @@ stops answering.
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug capture (shapes + raw streams) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
-| Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/sol/astra) |
+| Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |
 | Inspect the dry auto state | `cat ~/.codex/codex-router/jev-router.codex-dry.json` (reason + expiry; auto-cleared by the next successful native call) |
 | Hide the model | `./bin/control picker set jev/auto hide` |
 | Disable the provider | `./bin/codex-router providers generic disable jev` |

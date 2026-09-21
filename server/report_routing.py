@@ -6,7 +6,7 @@ Reads the live decision log written by `server/jev_server.py`
 `at`, `gate`, `tier`, `conf`, `depth`, `model`, `effort`, `speed`, `jev_ms`,
 `total_ms`, ...) and prints, over a window of N days:
 
-  - the distribution of the models/tiers served (luna / sol / astra, plus the
+  - the distribution of the models/tiers served (luna / terra / sol / astra, plus the
     Codex-dry tandem when it took over);
   - the share of turns served by the cheapest tier (luna);
   - the gates the policy went through (`apply`, `hold(sol)`, `hold(luna_step)`,
@@ -64,6 +64,8 @@ LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
 BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
 
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
+TERRA = "gpt-5.6-terra"
+NATIVE_TIERS = (LUNA, TERRA, SOL, ASTRA)
 
 # Prices per 1M tokens (input, output, cached input, cache write), short context,
 # Sep 2026 — kept identical to poc/backtest_savings.py so the two tools agree.
@@ -82,10 +84,11 @@ API_FAST_X = 2.0
 # 1,616,250 output tokens.
 MIX = {"input": 2_886_560, "cached": 2_836_607, "output": 6_819}
 
-# Short names of the native triptych, then the tandem family. Anything else is
+# Short names of the native native model ladder, then the tandem family. Anything else is
 # reported under its own leaf name.
 SHORT = {
     LUNA: "luna",
+    TERRA: "terra",
     SOL: "sol",
     ASTRA: "astra",
     "opencode-go/deepseek-v4.1-flash": "tandem",
@@ -129,7 +132,7 @@ def measured_usage(entries):
             continue
         for attempt in attempts:
             model = attempt.get("model")
-            if model not in CREDIT_RATES:
+            if model not in NATIVE_TIERS:
                 continue
             report["native_attempts"] += 1
             usage = attempt.get("usage")
@@ -417,7 +420,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         model = entry.get("model") or "(none)"
         conf = entry.get("conf")
         served = entry.get("tier")
-        if model in (LUNA, SOL, ASTRA):
+        if model in NATIVE_TIERS:
             natives += 1
         elif SHORT.get(model) == "tandem":
             dry += 1
@@ -437,7 +440,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         else:
             row["cost_units"] += unit
             real_units += unit
-            if model in (LUNA, SOL, ASTRA):
+            if model in NATIVE_TIERS:
                 native_units += unit
         gates[entry.get("gate") or "(none)"] = gates.get(entry.get("gate") or "(none)", 0) + 1
         tier_key = served if served is not None else "(none)"
@@ -600,7 +603,7 @@ def render_text(rep):
     if served["tandem_turns"]:
         lines += [f"Codex-dry tandem served {fmt(served['tandem_turns'])} turns "
                   f"({served['tandem_share_pct']}%) — native usage exhausted, "
-                  f"the triptych was replaced (see the gates below)"]
+                  f"the native model ladder was replaced (see the gates below)"]
 
     lines += ["", "Gates",
               table(["gate", "turns", "share"],
@@ -710,7 +713,7 @@ def render_text(rep):
         if bt.get("scenarios_usd"):
             lines += ["  baselines: " + " · ".join(f"{SHORT.get(m, m)} {v} $"
                                                   for m, v in bt["scenarios_usd"].items()
-                                                  if SHORT.get(m, m) in ("luna", "sol", "astra"))]
+                                                  if m in NATIVE_TIERS)]
     else:
         lines += ["", "Simulated API-equivalent USD: no backtest aggregate yet — "
                   "run `python3 poc/backtest_savings.py --days 7` for a simulation using recorded tokens."]

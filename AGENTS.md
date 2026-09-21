@@ -75,7 +75,7 @@ it already has `models`, append to the array instead of overwriting):
       "provider": "jev",
       "listed": true,
       "displayName": "Jev Codex Router",
-      "description": "Auto-routing by Jev (TypeSafe): every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
+      "description": "Auto-routing by Jev (TypeSafe): every turn is classified and served by luna, terra, sol or astra at the thinking depth it needs.",
       "priority": 95,
       "defaultEffort": "medium",
       "reasoningLevels": [
@@ -169,7 +169,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   `touch ~/.codex/codex-router/jev-router.codex-dry` → frontier-tier calls go to
   `opencode-go/glm-5.3-flash`, every other tier to
   `opencode-go/deepseek-v4.1-flash`; remove the file to return to the
-  luna/sol/astra triptych. An automatic flip (429 / usage-limit response) also
+  luna/terra/sol/astra native model ladder. An automatic flip (429 / usage-limit response) also
   retries the failed call on the tandem, then lasts until the instant the edge
   announced for the window reset (30 minutes when the refusal announces none,
   one week at most) — `cat ~/.codex/codex-router/jev-router.codex-dry.json`
@@ -209,7 +209,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v4-astra-policy`: one System One request asks
+- The current policy is `split-v5-terra`: one System One request asks
   three independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier and reasoning effort — for every model call, including
   tool continuations and post-compaction calls. Pre-project software/project
@@ -225,7 +225,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   force Luna to max or enable Fast mode.
 - Apart from the explicit mandatory-Astra policy, no scenario override, target
   model share, or confidence threshold may replace a valid Jev choice. Confidence
-  is diagnostic. Terra is not a live candidate in this policy.
+  is diagnostic. The native ladder is Luna → Terra → Sol → Astra. Terra covers
+  routine bounded implementation with clear requirements; Sol covers complex
+  implementation and cross-file reasoning. Mandatory Astra categories still win.
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run
