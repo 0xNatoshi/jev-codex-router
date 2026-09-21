@@ -25,6 +25,8 @@ No OpenAI Platform API key is needed for this local ChatGPT-session relay.
 | Action | Command |
 |---|---|
 | Decision log | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
+| Current-policy cost/cache report | `python3 server/report_routing.py --days 7 --policy current` |
+| Stable all-Sol cohort | create `~/.codex/codex-router/jev-router.sol-baseline.json` with `{"percent":10,"until":"<ISO-8601>"}` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` / `rm` to re-enable |
 | Install the launchd service | `bash server/install-service.sh` (in your own Terminal) |
 | Service status | `launchctl print gui/$(id -u)/com.thibaultsaintjean.jev-router` |
@@ -98,7 +100,8 @@ for the distinction between the built-in endpoint override and custom providers.
   `text/event-stream; charset=utf-8` on stream relays.
 - `stream: true` is forced upstream (the edge requires it); non-stream callers
   get the final response object assembled from the SSE stream.
-- One compact Jev decision per request (included in total latency). Tool-loop
-  continuations are re-classified from the active task and latest bounded step
-  evidence, so the model may change between sub-actions. The canonical request
-  and `prompt_cache_key` remain unchanged for the selected model.
+- One compact Jev decision starts each semantic phase. Its explicit lease can
+  cover a clean same-tool chain or the clean continuations of one user turn;
+  changed tools, errors, compactions and new user turns are re-classified. The
+  canonical request and `prompt_cache_key` remain unchanged for every selected
+  model.

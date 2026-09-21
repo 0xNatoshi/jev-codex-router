@@ -46,6 +46,7 @@ class ReplayPolicy(unittest.TestCase):
                      "astra_policy": {"choice": pair["astra_policy"], "confidence": 0.1},
                      "model": {"choice": pair["model"], "confidence": 0.1},
                      "effort": {"choice": pair["effort"], "confidence": 0.1},
+                     "lease": {"choice": pair["lease"], "confidence": 0.1},
                  }}) as judge, \
                  mock.patch("sys.argv", ["backtest"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(backtest.main(), 0)
@@ -76,7 +77,8 @@ class ReplayPolicy(unittest.TestCase):
                  mock.patch.object(backtest.poc, "load_key", return_value="fixture"), \
                  mock.patch.object(backtest.poc, "post_json", return_value={"answers": {
                      "astra_policy": {"choice": "normal"},
-                     "model": {"choice": "luna"}, "effort": {"choice": "low"}}}), \
+                     "model": {"choice": "luna"}, "effort": {"choice": "low"},
+                     "lease": {"choice": "one_call"}}}), \
                  mock.patch("sys.argv", ["backtest"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(backtest.main(), 0)
             data = json.loads(result.read_text())

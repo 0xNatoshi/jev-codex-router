@@ -61,6 +61,7 @@ import statistics
 import sys
 from contextlib import ExitStack
 from itertools import chain
+from routing_policy import POLICY_VERSION
 
 LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
 BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
@@ -154,6 +155,7 @@ def measured_usage(entries):
 def prompt_cache_usage(entries):
     """Observed cache reads plus model switching, grouped by private session hash."""
     total_input = total_cached = observed = unknown = hits = 0
+    total_written = write_observed = 0
     rows = {}
     scopes = set()
     last_model = {}
@@ -195,7 +197,9 @@ def prompt_cache_usage(entries):
                 continue
             row = rows.setdefault(model, {
                 "observed_attempts": 0, "unknown_attempts": 0, "hit_attempts": 0,
-                "input_tokens": 0, "cached_input_tokens": 0, "sessions": set(),
+                "input_tokens": 0, "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0, "write_observed_attempts": 0,
+                "sessions": set(),
             })
             usage = attempt.get("usage")
             inp = usage.get("input_tokens") if isinstance(usage, dict) else None
@@ -212,6 +216,12 @@ def prompt_cache_usage(entries):
             row["observed_attempts"] += 1
             row["input_tokens"] += inp
             row["cached_input_tokens"] += cached
+            written = usage.get("cache_write_input_tokens")
+            if isinstance(written, int) and not isinstance(written, bool) and written >= 0:
+                total_written += written
+                write_observed += 1
+                row["cache_write_input_tokens"] += written
+                row["write_observed_attempts"] += 1
             if cached:
                 hits += 1
                 row["hit_attempts"] += 1
@@ -300,10 +310,81 @@ def prompt_cache_usage(entries):
         "hit_rate_pct": round(100.0 * hits / observed, 1) if observed else None,
         "input_tokens": total_input,
         "cached_input_tokens": total_cached,
+        "cache_write_input_tokens": total_written,
+        "write_observed_attempts": write_observed,
         "cached_share_pct": (
             round(100.0 * total_cached / total_input, 1) if total_input else None
         ),
         "by_model": rows,
+    }
+
+
+def routing_efficiency(entries):
+    """Paid router decisions avoided by leases, using observed Jev usage only."""
+    jev_decisions = lease_hits = jev_input = 0
+    sources = {}
+    leases = {}
+    for entry in entries:
+        source = entry.get("decision_source") or "legacy"
+        sources[source] = sources.get(source, 0) + 1
+        lease = entry.get("lease")
+        if lease:
+            leases[lease] = leases.get(lease, 0) + 1
+        if source == "jev":
+            jev_decisions += 1
+        if source == "lease" or entry.get("lease_hit") is True:
+            lease_hits += 1
+        usage = entry.get("jev_usage")
+        if isinstance(usage, dict):
+            value = usage.get("input_tokens", usage.get("inputTokens"))
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                jev_input += value
+    judged = jev_decisions + lease_hits
+    return {
+        "jev_decisions": jev_decisions,
+        "lease_hits": lease_hits,
+        "decision_calls_avoided_pct": (
+            round(100.0 * lease_hits / judged, 1) if judged else None
+        ),
+        "observed_jev_input_tokens": jev_input,
+        "sources": sources,
+        "leases": leases,
+    }
+
+
+def experiment_comparison(entries):
+    """Observed routed-vs-all-Sol cohort metrics; no equal-quality claim."""
+    cohorts = {}
+    for name in ("routed", "all_sol"):
+        selected = [entry for entry in entries if entry.get("experiment") == name]
+        if not selected:
+            continue
+        usage = measured_usage(selected)
+        cache = prompt_cache_usage(selected)
+        efficiency = routing_efficiency(selected)
+        success = sum(1 for entry in selected if entry.get("status") == 200)
+        cohorts[name] = {
+            "turns": len(selected),
+            "sessions": len({
+                entry.get("cache_scope") for entry in selected if entry.get("cache_scope")
+            }),
+            "success_pct": round(100.0 * success / len(selected), 1),
+            "routed_credits": usage["routed_credits"],
+            "priced_attempts": usage["priced_attempts"],
+            "unknown_attempts": usage["unknown_attempts"],
+            "cached_share_pct": cache["cached_share_pct"],
+            "route_switches": cache["route_switches"],
+            "jev_decisions": efficiency["jev_decisions"],
+            "lease_hits": efficiency["lease_hits"],
+            "jev_input_tokens": efficiency["observed_jev_input_tokens"],
+        }
+    return {
+        "active": bool(cohorts),
+        "cohorts": cohorts,
+        "note": (
+            "Stable hashed-session cohorts; observed traffic only. Compare quality and "
+            "completion outcomes before interpreting cost."
+        ),
     }
 
 
@@ -415,7 +496,7 @@ def percentile(values, pct):
     return values[idx]
 
 
-def summarize(entries, days, stats, log_path, backtest_path=None):
+def summarize(entries, days, stats, log_path, backtest_path=None, policy=None):
     total = len(entries)
     units = unit_costs()
     models, gates, tiers, steps = {}, {}, {}, {}
@@ -507,6 +588,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
             "from": entries[0]["_at"].isoformat(timespec="seconds") if entries else None,
             "to": entries[-1]["_at"].isoformat(timespec="seconds") if entries else None,
             "turns": total,
+            "policy": policy,
             "log_lines": stats["lines"],
             "skipped": {"out_of_window": stats["out_of_window"],
                         "undated": stats["undated"],
@@ -542,6 +624,14 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         "native_cost": native_cost,
         "measured_usage": measured_usage(entries),
         "prompt_cache": prompt_cache_usage(entries),
+        "routing_efficiency": routing_efficiency(entries),
+        "experiment": experiment_comparison(entries),
+        "policy_versions": {
+            version: sum(1 for entry in entries if entry.get("policy_version") == version)
+            for version in sorted({
+                entry.get("policy_version") for entry in entries if entry.get("policy_version")
+            })
+        },
         "backtest": read_backtest(backtest_path or BACKTEST_STATE),
     }
 
@@ -586,6 +676,8 @@ def render_text(rep):
              f"window: last {rep['window']['days']} day(s)"
              + (f" ({rep['window']['from']} → {rep['window']['to']})" if total else "")
              + f" · {total} turns of {rep['window']['log_lines']} log lines"]
+    if rep["window"].get("policy"):
+        lines[-1] += f" · policy {rep['window']['policy']}"
     if not total:
         lines.append("no turn in this window — nothing to report")
         return "\n".join(lines)
@@ -681,6 +773,29 @@ def render_text(rep):
             ["model", "sessions", "hits/seen", "hit rate", "cached input", "unknown"],
             cache_rows,
         )]
+    efficiency = rep["routing_efficiency"]
+    lines += ["", "Router input — observed decisions",
+              f"  Jev calls {efficiency['jev_decisions']} · lease hits "
+              f"{efficiency['lease_hits']} · avoided "
+              f"{fmt(efficiency['decision_calls_avoided_pct'])}% of eligible decisions · "
+              f"{fmt(efficiency['observed_jev_input_tokens'])} observed Jev input tokens"]
+    experiment = rep["experiment"]
+    if experiment["active"]:
+        cohort_rows = []
+        for name, row in experiment["cohorts"].items():
+            cohort_rows.append([
+                name, row["turns"], row["sessions"], f"{row['success_pct']}%",
+                row["priced_attempts"], row["routed_credits"],
+                f"{fmt(row['cached_share_pct'])}%", row["route_switches"],
+                row["jev_input_tokens"],
+            ])
+        lines += ["", "Stable session experiment — routed vs all-Sol",
+                  table(
+                      ["cohort", "turns", "sessions", "success", "priced", "credits",
+                       "cached", "swaps", "Jev input"],
+                      cohort_rows,
+                  ),
+                  f"  {experiment['note']}"]
     native = rep["native_cost"]
     lines += ["", "Native Codex calls only — fixed-volume API-rate proxy, not measured quota",
               f"  {native['turns']} calls · {fmt(native['routed_units'])} units · "
@@ -736,12 +851,19 @@ def main(argv=None):
     ap.add_argument("--log", default=LIVE_LOG, help=f"live decision log (default {LIVE_LOG})")
     ap.add_argument("--backtest", default=BACKTEST_STATE,
                     help=f"backtest aggregate (default {BACKTEST_STATE})")
+    ap.add_argument(
+        "--policy",
+        help="only one policy version; use 'current' for the installed V10 policy",
+    )
     args = ap.parse_args(argv)
     if args.days < 0:
         ap.error("--days must be >= 0")
 
     entries, stats = load_entries(args.log, args.days)
-    rep = summarize(entries, args.days, stats, args.log, args.backtest)
+    policy = POLICY_VERSION if args.policy == "current" else args.policy
+    if policy:
+        entries = [entry for entry in entries if entry.get("policy_version") == policy]
+    rep = summarize(entries, args.days, stats, args.log, args.backtest, policy)
     if args.json:
         json.dump(rep, sys.stdout, indent=2, ensure_ascii=False)
         print()

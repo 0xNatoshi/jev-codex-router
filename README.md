@@ -55,10 +55,11 @@ Codex ──▶ Codex Router (:4202)
 
 ## Routing policy
 
-The shared contract in `server/routing_policy.py` gives Jev three independent
+The shared contract in `server/routing_policy.py` gives Jev four independent
 Choice questions in one request: whether the next call falls under the mandatory
 Astra policy, the least expensive sufficient capability tier (Luna, Terra, Sol or
-Astra), and the minimum sufficient thinking depth (low through max). The first
+Astra), the minimum sufficient thinking depth (low through max), and a bounded
+route lease (`one_call`, `tool_chain` or `user_turn`). The first
 choice covers project architecture, independent final code review and risk-focused
 review (security, auth/permissions, concurrency, migrations, public API compatibility
 or material performance risks). Routine in-progress quality checkpoints, comparing
@@ -72,7 +73,7 @@ There is no target distribution, keyword-to-model rule, low-confidence fallback
 to Sol, mechanical-step exception, or compaction pin. Outside the explicit
 mandatory-Astra policy, a valid pair of tier and effort decisions is applied
 unchanged even when options are close. Jev's conservative combined confidence
-and all three choice distributions are logged separately; neither is a measured
+and all four choice distributions are logged separately; neither is a measured
 probability that the selected model will successfully finish the task.
 
 The native ladder is Luna → Terra → Sol → Astra. Terra covers routine bounded
@@ -82,7 +83,7 @@ reasoning. These profiles are routing priors, not measured capability guarantees
 Terra attempts are counted as native in reports; its ChatGPT credit estimate
 remains unknown until a verified credit rate is configured.
 
-Policy `split-v9-cache-aware` judges remaining work rather than inheriting a
+Policy `split-v10-measured-cache` judges remaining work rather than inheriting a
 completed review's category. Explicit mechanical follow-through can use Luna;
 implied intent, underspecified goals and autonomous investigation favor Sol.
 The objective includes correction and clarification costs. There is no
@@ -166,8 +167,8 @@ The router logs one JSON line per decision (`~/.codex/codex-router/jev-router-li
 table a third party can reproduce on their own machine:
 
 ```bash
-python3 server/report_routing.py --days 7          # text tables (default window)
-python3 server/report_routing.py --days 30 --json  # machine-readable
+python3 server/report_routing.py --days 7 --policy current  # current policy only
+python3 server/report_routing.py --days 30 --json            # all versions, JSON
 ```
 
 It prints the served model distribution (luna/terra/sol/astra, plus the Codex-dry
@@ -191,22 +192,26 @@ Their logged Fast speed retains its surcharge instead of being repriced by the
 new policy. The old backtest is clearly labelled as a simulation. Current replay
 scripts share the live decision contract and reject a cache from another policy.
 
-Routing is call-scoped: every user call, tool continuation and post-compaction
-call gets a fresh Jev decision, so the serving model may change between
-sub-actions. Provider retries inside one call retain that call's decision. From
-the second successful native call in a prompt-cache scope onward, Jev also sees
-the last served native model, the native models still warm within the caller's
-cache TTL, and a coarse canonical-context size (`small` through `huge`). This is
-a cost tie-breaker, not a capability ceiling: Jev keeps a sufficient warm model
-instead of paying for a cold replay, but still moves when the remaining work
-materially needs another tier. Jev receives only a bounded decision dossier:
+Routing is phase-scoped. Jev can keep the exact route for one call, clean
+continuations of the same tool, or clean tool continuations within the current
+user turn. A new user turn, error, compaction, changed tool chain or expired cache
+TTL ends the lease and forces a fresh decision. Provider retries inside one call
+retain that call's decision. Jev sees measured per-model cache evidence:
+`hot` only after a real cache read, `warming` after a successful zero-read call,
+and `unknown` when usage is absent, plus read percentage, age and measured or
+estimated context size. This is a cost tie-breaker, not a capability ceiling.
+Jev receives only a bounded decision dossier:
 active task, step type, and—when
 relevant—a short assistant-intent tail, tool name, tool-output tail or image
 flag. Short context-dependent asks such as `continue` also receive one bounded
 active-task summary from Codex's goal envelope or the preceding meaningful user
 ask. The executing model receives the caller's canonical request in full, with
 only the selected model, reasoning effort, standard service tier and required
-streaming flag changed.
+streaming flag changed. For eligible Astra Responses requests, the selected
+effort is inserted as a `configuration_update` immediately before the latest
+user message; this preserves the stable request-level prefix. Requests using
+automatic truncation/context management, compaction items, or an incompatible
+shape fall back to the request-level effort.
 
 Context continuity is unconditional: every selected model receives the complete
 canonical request, so a cache miss can increase processed input but can never
@@ -218,8 +223,14 @@ There is no cross-model KV-cache handoff, because those tensors belong to the
 weights of the model that produced them
 ([OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)).
 The report hashes session ids before logging them and shows actual
-`cached_input_tokens` by model, including cache hits immediately after a switch
-and when returning to a previously used model.
+cache reads and writes. An optional state file
+`~/.codex/codex-router/jev-router.sol-baseline.json` can assign a stable
+percentage of hashed sessions to an all-Sol baseline. Mandatory-Astra decisions
+still win. Use
+`python3 server/report_routing.py --days 7 --policy current` to compare observed
+routed and all-Sol cohorts, Jev input, leases, swaps, cache reuse and rate-card
+credit estimates. The comparison is observational until both cohorts have enough
+completed tasks and quality outcomes.
 
 Each model still owns an independent cache. Returning to a previously used model
 can reuse its prefix, but observed switches on 21 September 2026 reused only
@@ -347,6 +358,7 @@ per-call attribution are excluded from the historical cost baseline.
 | See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
 | Show the model and thinking above every assistant message | `touch ~/.codex/codex-router/jev-router.signature` — a leading `**🧠 sol · thinking: high**` appears from the first text fragment, including commentary and unphased replies; remove the file to disable |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
+| 10% stable all-Sol measurement cohort | create `~/.codex/codex-router/jev-router.sol-baseline.json` with `{"percent":10,"until":"<ISO-8601>"}`; remove it to stop |
 | Debug counters (no raw content) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
 | Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |

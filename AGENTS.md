@@ -123,6 +123,11 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   block in the Codex thread.
 - **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
   are logged (`would` field) while every call is still served by astra.
+- **All-Sol measurement cohort**: write
+  `{"percent":10,"until":"<ISO-8601>"}` to
+  `~/.codex/codex-router/jev-router.sol-baseline.json`. Assignment is stable by
+  hashed prompt-cache scope; mandatory Astra, shadow and Codex-dry semantics
+  still win. Remove the file to stop the experiment.
 - **Debug capture** (bounded): `touch ~/.codex/codex-router/jev-router.debug`
   → request shapes in `jev-router-debug.jsonl` and transport counters in
   `jev-router-debug-stream.log`. Remove the file to stop.
@@ -130,8 +135,8 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   or raw model streams are recorded; old captures are protected, not deleted.
 - **Tune the policy**: the shared contract in `server/routing_policy.py`. Keep decisions
   joint and evidence-based; restart the server after edits. Cache affinity
-  (`last_model`, warm models within the caller TTL, coarse context size) is a
-  cost signal inside Jev's typed model choice, never a code-side model override.
+  (`last_model`, measured state/read percentage/age and context size) is a cost
+  signal inside Jev's typed model choice, never a code-side model override.
 - **Backtest**: `python3 poc/backtest_savings.py --days 7` (see BACKTEST.md).
 - **Router CLI**: `bin/jev-codex-router router <command>` delegates to the
   embedded runtime.
@@ -159,14 +164,18 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v9-cache-aware`: one System One request asks
-  three independent Choice questions with explicit criteria — mandatory Astra
-  policy, capability tier and reasoning effort — for every model call, including
-  tool continuations and post-compaction calls. Pre-project software/project
+- The current policy is `split-v10-measured-cache`: one System One request asks
+  four independent Choice questions with explicit criteria — mandatory Astra
+  policy, capability tier, reasoning effort and a bounded route lease. New user
+  turns, errors, compactions and changed tool chains are always re-evaluated;
+  clean continuations may reuse the exact route for one tool chain or user turn.
+  Pre-project software/project
   architecture, independent final code review and risk-focused review force Astra while
   preserving Jev's independently selected effort. The model question also gets
-  bounded cache affinity for the private prompt-cache scope so a sufficient warm
-  model can beat a cold switch without blocking a materially required tier.
+  measured cache evidence for the private prompt-cache scope: `hot` requires an
+  observed cache read, `warming` means successful service with zero read, and
+  missing usage remains `unknown`. A sufficient hot model can beat a cold switch
+  without blocking a materially required tier.
   Provider retries inside one
   call keep that decision.
   Routine in-progress quality checkpoints, score comparisons and fixes to established
@@ -174,13 +183,16 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   The router does not run `jev-review` or create an independent reviewer; quality
   scoring and blind reviewer context must be handled by the calling workflow.
   The selected model always receives the complete canonical request and the
-  original cache controls; Jev receives only the bounded decision dossier. A
+  original cache controls; Jev receives only the bounded decision dossier. For
+  eligible Astra calls, adaptive effort uses a `configuration_update` before the
+  latest user message so the request-level prefix stays stable. A
   context-dependent short ask also gets one bounded active-task summary. Cache
   hits are a cost optimization, never the carrier of conversation continuity:
   reuse is measured per `(hashed session, model)`, while every model swap still
   gets the full replay. All tiers use adaptive effort and standard speed; never
   force Luna to max or enable Fast mode.
-- Apart from the explicit mandatory-Astra policy, no scenario override, target
+- Apart from the explicit mandatory-Astra policy and an explicitly enabled,
+  stable hashed-session all-Sol measurement cohort, no scenario override, target
   model share, or confidence threshold may replace a valid Jev choice. Confidence
   is diagnostic. The native ladder is Luna → Terra → Sol → Astra. Terra covers
   routine bounded implementation with clear requirements; Sol covers complex
@@ -195,8 +207,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run
-  `python3 server/report_routing.py --days 7` for native-only credit estimates
-  and observed prompt-cache reads by model/session; unknown usage remains
+  `python3 server/report_routing.py --days 7 --policy current` for native-only
+  credit estimates, lease savings, the routed/all-Sol cohort comparison and
+  observed prompt-cache reads/writes by model/session; unknown usage remains
   unknown and reasoning tokens are not counted twice.
 - `BACKTEST.md` documents the old policy's fixed-token simulation. It is not a
   measurement of current quota savings or result quality.

@@ -7,6 +7,7 @@ import jev_server as jev
 from routing_policy import (
     ASTRA_POLICY,
     DEPTH_PROFILES,
+    LEASE_PROFILES,
     MODEL_IDS,
     QUESTIONS,
     decision_from_answers,
@@ -23,9 +24,9 @@ class SplitPolicy(unittest.TestCase):
         self.assertIn("independent final code review", encoded)
         self.assertIn("routine in-progress quality checkpoints", encoded)
         self.assertIn("never waives a required final/risk review", encoded)
-        self.assertEqual(set(QUESTIONS), {"astra_policy", "model", "effort"})
+        self.assertEqual(set(QUESTIONS), {"astra_policy", "model", "effort", "lease"})
         self.assertIn("corrections and clarification turns", encoded)
-        self.assertIn("reprocessing-cost signal", encoded)
+        self.assertIn("reprocessing-cost evidence", encoded)
         self.assertIn("never a capability ceiling", encoded)
         self.assertIn("Do not inherit a completed phase", encoded)
 
@@ -59,8 +60,8 @@ class SplitPolicy(unittest.TestCase):
         result[selected] = 0.4
         return result
 
-    def answer(self, model=jev.LUNA, effort="low", astra_required=False):
-        pair = route_choice(model, effort, astra_required)
+    def answer(self, model=jev.LUNA, effort="low", astra_required=False, lease="one_call"):
+        pair = route_choice(model, effort, astra_required, lease)
         return {
             "astra_policy": {
                 "choice": pair["astra_policy"],
@@ -79,6 +80,11 @@ class SplitPolicy(unittest.TestCase):
                 "confidence": 0.12,
                 "probabilities": self.distribution(DEPTH_PROFILES, pair["effort"]),
             },
+            "lease": {
+                "choice": pair["lease"],
+                "confidence": 0.18,
+                "probabilities": self.distribution(LEASE_PROFILES, pair["lease"]),
+            },
         }
 
     def test_valid_independent_choices_are_combined_without_an_override(self):
@@ -89,6 +95,7 @@ class SplitPolicy(unittest.TestCase):
                 self.assertEqual(result["base_model"], model)
                 self.assertEqual(result["astra_policy"], "normal")
                 self.assertEqual(result["effort"], effort)
+                self.assertEqual(result["lease"], "one_call")
                 self.assertEqual(result["confidence"], 0.12)
                 self.assertEqual(result["chosen_probability"], 0.4)
                 self.assertEqual(result["gate"], "apply")
@@ -121,6 +128,7 @@ class SplitPolicy(unittest.TestCase):
             ("astra_policy", ASTRA_POLICY),
             ("model", MODEL_IDS),
             ("effort", DEPTH_PROFILES),
+            ("lease", LEASE_PROFILES),
         ):
             selected = self.answer()[question]["choice"]
             for value in (-0.5, float("nan"), float("inf"), True, "0.2"):
@@ -149,6 +157,7 @@ class SplitPolicy(unittest.TestCase):
             answer["astra_policy"]["confidence"] = confidence
             answer["model"]["confidence"] = confidence
             answer["effort"]["confidence"] = confidence
+            answer["lease"]["confidence"] = confidence
             result = decision_from_answers(answer)
             self.assertIsNone(result["confidence"])
             self.assertEqual(result["model"], jev.LUNA)

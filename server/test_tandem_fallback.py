@@ -38,12 +38,13 @@ MISMATCHED = (
 )
 
 
-def jev_answer(tier, depth, confidence):
-    pair = route_choice(tier, depth)
+def jev_answer(tier, depth, confidence, lease="one_call"):
+    pair = route_choice(tier, depth, lease=lease)
     return {"answers": {
         "astra_policy": {"choice": pair["astra_policy"], "confidence": confidence},
         "model": {"choice": pair["model"], "confidence": confidence},
         "effort": {"choice": pair["effort"], "confidence": confidence},
+        "lease": {"choice": pair["lease"], "confidence": confidence},
     }}
 
 
@@ -99,7 +100,7 @@ class TandemHandoff(unittest.TestCase):
         # log, or depend on the user's current fallback model configuration.
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
-                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
+                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH", "SOL_BASELINE_PATH"):
             self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
         self.enterContext(mock.patch.object(jev, "STATE", tmp))
         self.enterContext(mock.patch.object(jev, "GO_STANDARD", "fixture/standard"))
@@ -251,7 +252,18 @@ class TandemHandoff(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 sent = Edge.payloads[-1]
                 self.assertEqual(sent["model"], tier)
-                self.assertEqual(sent["reasoning"], {"effort": depth, "summary": "auto"})
+                if tier == jev.ASTRA:
+                    self.assertEqual(sent["reasoning"], {
+                        "effort": "max", "summary": "auto"
+                    })
+                    self.assertEqual(sent["input"][0], {
+                        "type": "configuration_update",
+                        "reasoning": {"effort": depth},
+                    })
+                else:
+                    self.assertEqual(sent["reasoning"], {
+                        "effort": depth, "summary": "auto"
+                    })
                 self.assertEqual(sent["service_tier"], "default")
                 self.assertTrue(sent["stream"])
 

@@ -8,23 +8,27 @@ Router's local caller edge (native session sharing enabled) — with no format
 conversion: Responses in, Responses out, SSE relayed verbatim.
 
 Routing policy: Jev independently classifies the mandatory-Astra policy, chooses
-one capability tier and one thinking depth for every call, in a single typed
-request. Code combines those answers and forces Astra for pre-project
+one capability tier, one thinking depth and a bounded route lease in a single
+typed request. Code combines those answers and forces Astra for pre-project
 architecture, independent final code review or risk-focused review. Routine
 quality checkpoints use ordinary capability routing. Every pair uses standard
 speed. Confidence is logged without changing other valid choices. There are no
-keyword overrides or target model proportions.
+keyword overrides or production target proportions; an explicit stable all-Sol
+measurement cohort is the sole experimental exception.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Per-call routing (v6): every model call is judged independently, so a tool loop
-may move between Luna, Terra, Sol and Astra as the next sub-action changes. Jev
-also sees bounded cache affinity for the current private session: the last
-successfully served native model, the native models still warm within the
-caller's cache TTL, and a coarse context-size band. Capability remains primary,
-but a sufficient warm model avoids a needless cold replay. Provider retries
-inside that call retain its decision. The compact Jev projection is
+Measured routing (v10): every user turn, error, compaction and material tool-chain
+transition is judged independently. A Jev-selected lease may reuse the exact
+model/effort across clean continuations, avoiding a paid router call and cache
+thrash without masking changed state. Jev sees bounded cache affinity for the
+current private session: actual per-model cache-read evidence, its age and the
+last measured context size. A successful call with no cache read is only
+``warming``; it is never mislabeled as a hit. Capability remains primary, but a
+sufficient hot model avoids a needless cold replay. Provider retries inside one
+call retain its decision. The compact Jev projection is
 judgment input only: the executing model always receives the caller's canonical
-request untouched, never that projection. The caller's prompt_cache_key also
+request in full, never that projection. Routing changes only transport controls
+and may add Astra's documented configuration update. The prompt_cache_key
 passes through untouched, allowing each selected model to reuse its own cache
 for this session; caches are not assumed to be shared across different models.
 Context continuity does not depend on those cache hits: every selected model
@@ -79,6 +83,7 @@ ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
 """
 import codecs
+import datetime
 import hashlib
 import http.client
 import json
@@ -103,13 +108,14 @@ DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 # Opt-in route header on each assistant text message. Presentation metadata is
 # removed from replayed history, including legacy trailing signatures.
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
+SOL_BASELINE_PATH = os.path.join(STATE, "jev-router.sol-baseline.json")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.4"
+VERSION = "1.5"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -182,13 +188,10 @@ CONTEXT_TASK_CHARS = 320
 CACHE_DEFAULT_TTL_S = 30 * 60
 CACHE_MAX_TTL_S = 24 * 60 * 60
 CACHE_TTL_RX = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.I)
-CACHE_BANDS = (
-    (64 * 1024, "small"),
-    (256 * 1024, "medium"),
-    (1024 * 1024, "large"),
-)
 _cache_affinity_lock = threading.Lock()
 _cache_affinity = {}
+_route_lease_lock = threading.Lock()
+_route_leases = {}
 
 # Codex wraps every turn in machine-generated blocks (goal context, plugin
 # catalog, environment, skills, mode notices). They are the longest part of a
@@ -707,22 +710,19 @@ def _cache_ttl_seconds(payload):
     return min(max(float(match.group(1)) * scale, 1), CACHE_MAX_TTL_S)
 
 
-def _context_band(payload):
-    """Coarse canonical-input size: enough for cost judgment, never prompt text."""
+def _estimated_context_k(payload):
+    """Approximate canonical input tokens in thousands without exposing prompt text."""
     try:
         size = len(json.dumps(
             payload.get("input"), ensure_ascii=False, separators=(",", ":")
         ).encode("utf-8"))
     except (TypeError, ValueError):
-        return "unknown"
-    for ceiling, label in CACHE_BANDS:
-        if size <= ceiling:
-            return label
-    return "huge"
+        return None
+    return max(1, int(round(size / 4000.0)))
 
 
 def cache_affinity(scope, payload, now=None):
-    """Bounded warm-cache evidence for one prompt-cache scope.
+    """Bounded measured cache evidence for one prompt-cache scope.
 
     Only a real prompt_cache_key is safe for continuity. The task-derived scope
     remains useful for aggregate telemetry but may repeat across unrelated calls.
@@ -736,31 +736,45 @@ def cache_affinity(scope, payload, now=None):
         entry = _cache_affinity.get(scope)
         if not isinstance(entry, dict):
             return None
-        warm = {
-            model: seen_at for model, seen_at in entry.get("models", {}).items()
-            if model in TIERS and now - seen_at <= ttl
-        }
-        if not warm:
+        models = {}
+        for model, evidence in entry.get("models", {}).items():
+            if model not in TIERS or not isinstance(evidence, dict):
+                continue
+            seen_at = evidence.get("seen_at")
+            if not isinstance(seen_at, (int, float)) or now - seen_at > ttl:
+                continue
+            models[model] = evidence
+        if not models:
             _cache_affinity.pop(scope, None)
             return None
-        entry["models"] = warm
+        entry["models"] = models
         last_model = entry.get("last_model")
-        if last_model not in warm:
-            last_model = max(warm, key=warm.get)
+        if last_model not in models:
+            last_model = max(models, key=lambda model: models[model]["seen_at"])
             entry["last_model"] = last_model
-        return {
+        result = {
             "last_model": route_label(last_model)[0],
-            "warm_models": [
-                route_label(model)[0]
-                for model in TIERS
-                if model in warm
-            ],
-            "context": _context_band(payload),
+            "context_k": (
+                (models[last_model].get("input_tokens") or 0) // 1000
+                or _estimated_context_k(payload)
+            ),
+            "models": {},
         }
+        for model in TIERS:
+            evidence = models.get(model)
+            if not evidence:
+                continue
+            result["models"][route_label(model)[0]] = {
+                "state": evidence.get("state", "unknown"),
+                "read_pct": evidence.get("read_pct"),
+                "age_s": max(0, int(now - evidence["seen_at"])),
+                "effort": evidence.get("effort"),
+            }
+        return result
 
 
-def remember_cache_model(scope, payload, model, status, now=None):
-    """Remember only successful native service; failed/fallback calls warm nothing."""
+def remember_cache_model(scope, payload, model, status, usage=None, effort=None, now=None):
+    """Remember measured native cache evidence; HTTP success alone is not a hit."""
     raw_key = payload.get("prompt_cache_key")
     if (
         status != 200
@@ -771,15 +785,162 @@ def remember_cache_model(scope, payload, model, status, now=None):
         return
     now = time.time() if now is None else now
     ttl = _cache_ttl_seconds(payload)
+    counts = usage_counts(usage)
+    inp = counts.get("input_tokens") if counts else None
+    cached = counts.get("cached_input_tokens") if counts else None
+    if isinstance(inp, int) and isinstance(cached, int) and 0 <= cached <= inp:
+        state = "hot" if cached > 0 else "warming"
+        read_pct = round(100.0 * cached / inp, 1) if inp else 0.0
+    else:
+        state, read_pct = "unknown", None
     with _cache_affinity_lock:
         entry = _cache_affinity.setdefault(scope, {"models": {}})
         entry["models"] = {
-            warm_model: seen_at
-            for warm_model, seen_at in entry.get("models", {}).items()
-            if warm_model in TIERS and now - seen_at <= ttl
+            known_model: evidence
+            for known_model, evidence in entry.get("models", {}).items()
+            if known_model in TIERS and isinstance(evidence, dict)
+            and isinstance(evidence.get("seen_at"), (int, float))
+            and now - evidence["seen_at"] <= ttl
         }
-        entry["models"][model] = now
+        entry["models"][model] = {
+            "seen_at": now,
+            "state": state,
+            "input_tokens": inp,
+            "cached_input_tokens": cached,
+            "cache_write_input_tokens": (
+                counts.get("cache_write_input_tokens") if counts else None
+            ),
+            "read_pct": read_pct,
+            "effort": effort if effort in EFFORTS else None,
+        }
         entry["last_model"] = model
+
+
+def _turn_fingerprint(payload):
+    """Stable private identity of the latest user turn, never persisted or logged."""
+    inp = payload.get("input")
+    text = inp if isinstance(inp, str) else ""
+    user_count = 1 if isinstance(inp, str) else 0
+    if isinstance(inp, list):
+        user_count = sum(
+            1 for item in inp
+            if isinstance(item, dict) and item.get("role") == "user"
+        )
+        for index in range(len(inp) - 1, -1, -1):
+            item = inp[index]
+            if isinstance(item, dict) and item.get("role") == "user":
+                text = _content_text(item.get("content"))
+                break
+    if not text:
+        return None
+    return hashlib.sha256(f"{user_count}:{text}".encode("utf-8")).hexdigest()[:20]
+
+
+def route_lease(scope, payload, step, now=None):
+    """Reuse a prior semantic route only for an unchanged, clean continuation."""
+    now = time.time() if now is None else now
+    fingerprint = _turn_fingerprint(payload)
+    with _route_lease_lock:
+        entry = _route_leases.get(scope)
+        if not isinstance(entry, dict):
+            return None
+        if (
+            step.get("step_type") != "tool_step"
+            or step.get("errored")
+            or not fingerprint
+            or entry.get("turn") != fingerprint
+            or now - entry.get("seen_at", 0) > _cache_ttl_seconds(payload)
+        ):
+            _route_leases.pop(scope, None)
+            return None
+        horizon = entry.get("lease")
+        if horizon == "one_call":
+            _route_leases.pop(scope, None)
+            return None
+        if horizon == "tool_chain":
+            tool = step.get("tool_call", {}).get("name") or ""
+            previous_tool = entry.get("tool")
+            if previous_tool and tool != previous_tool:
+                _route_leases.pop(scope, None)
+                return None
+            if not tool:
+                _route_leases.pop(scope, None)
+                return None
+            entry["tool"] = tool
+        entry["seen_at"] = now
+        return dict(entry["decision"])
+
+
+def remember_route_lease(scope, payload, step, decision, status, now=None):
+    """Persist only successful, explicitly scoped Jev decisions in memory."""
+    raw_key = payload.get("prompt_cache_key")
+    if (
+        status != 200
+        or not isinstance(raw_key, str)
+        or not raw_key.strip()
+        or not isinstance(decision, dict)
+        or decision.get("lease") == "one_call"
+    ):
+        with _route_lease_lock:
+            _route_leases.pop(scope, None)
+        return
+    fingerprint = _turn_fingerprint(payload)
+    if not fingerprint:
+        return
+    now = time.time() if now is None else now
+    preserved = {
+        key: decision.get(key)
+        for key in (
+            "model", "base_model", "astra_policy", "effort", "lease", "speed",
+            "gate", "confidence", "probabilities", "chosen_probability",
+            "policy_version",
+        )
+    }
+    with _route_lease_lock:
+        _route_leases[scope] = {
+            "turn": fingerprint,
+            "lease": decision["lease"],
+            "tool": (
+                step.get("tool_call", {}).get("name")
+                if step.get("step_type") == "tool_step"
+                else None
+            ),
+            "seen_at": now,
+            "decision": preserved,
+        }
+
+
+def sol_baseline_config(now=None):
+    """Read the opt-in all-Sol experiment without caching mutable operations state."""
+    try:
+        with open(SOL_BASELINE_PATH, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    percent = config.get("percent")
+    if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+        return None
+    percent = min(100.0, max(0.0, float(percent)))
+    until = config.get("until")
+    if until:
+        try:
+            expires = datetime.datetime.fromisoformat(str(until).replace("Z", "+00:00"))
+            current = datetime.datetime.now(expires.tzinfo) if now is None else now
+            if isinstance(current, (int, float)):
+                current = datetime.datetime.fromtimestamp(current, expires.tzinfo)
+            if current >= expires:
+                return None
+        except (TypeError, ValueError):
+            return None
+    return {"percent": percent, "until": until}
+
+
+def sol_baseline_member(scope, config):
+    """Stable hashed-session assignment, with no raw session identifier."""
+    if not config or config["percent"] <= 0:
+        return False
+    bucket = int(hashlib.sha256(f"sol-baseline:{scope}".encode()).hexdigest()[:8], 16)
+    return bucket % 10_000 < int(config["percent"] * 100)
 
 
 def route_label(model):
@@ -866,17 +1027,86 @@ def usage_counts(usage):
         return None
     out = {}
     for name in ("input_tokens", "output_tokens", "total_tokens",
-                 "cache_write_input_tokens"):
+                 "cached_input_tokens", "cache_write_input_tokens"):
         value = usage.get(name)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             out[name] = value
     for group, name in (("input_tokens_details", "cached_tokens"),
+                        ("input_tokens_details", "cache_write_tokens"),
                         ("output_tokens_details", "reasoning_tokens")):
         details = usage.get(group)
         value = details.get(name) if isinstance(details, dict) else None
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            out["cached_input_tokens" if name == "cached_tokens" else name] = value
+            if name == "cached_tokens":
+                out["cached_input_tokens"] = value
+            elif name == "cache_write_tokens":
+                out["cache_write_input_tokens"] = value
+            else:
+                out[name] = value
     return out or None
+
+
+def _astra_configuration_eligible(payload):
+    """Whether this Responses request can safely carry an Astra config update."""
+    items = payload.get("input")
+    if not isinstance(items, list) or not items:
+        return False
+    if payload.get("truncation") == "auto" or payload.get("context_management"):
+        return False
+    if any(
+        isinstance(item, dict)
+        and item.get("type") in ("configuration_update", "compaction", "compaction_summary")
+        for item in items
+    ):
+        return False
+    return any(isinstance(item, dict) and item.get("role") == "user" for item in items)
+
+
+def apply_route_payload(payload, model, effort, original_reasoning, injected_update=None):
+    """Apply one attempt's route while preserving the stable request prefix.
+
+    Astra can change reasoning for the next user message through a
+    configuration_update, leaving the request-level reasoning prefix unchanged.
+    Retries remove the update by object identity before targeting another model.
+    """
+    items = payload.get("input")
+    if injected_update is not None and isinstance(items, list):
+        payload["input"] = [item for item in items if item is not injected_update]
+        items = payload["input"]
+    if original_reasoning is None:
+        payload.pop("reasoning", None)
+    else:
+        payload["reasoning"] = dict(original_reasoning)
+
+    payload["model"] = model
+    transport = "request"
+    next_update = None
+    base_effort = (
+        original_reasoning.get("effort")
+        if isinstance(original_reasoning, dict)
+        else None
+    )
+    if (
+        model == ASTRA
+        and effort in EFFORTS
+        and base_effort in EFFORTS
+        and effort != base_effort
+        and _astra_configuration_eligible(payload)
+    ):
+        next_update = {"type": "configuration_update", "reasoning": {"effort": effort}}
+        insert_at = max(
+            index for index, item in enumerate(payload["input"])
+            if isinstance(item, dict) and item.get("role") == "user"
+        )
+        payload["input"].insert(insert_at, next_update)
+        transport = "configuration_update"
+    elif effort:
+        reasoning = dict(original_reasoning) if isinstance(original_reasoning, dict) else {}
+        reasoning["effort"] = effort
+        payload["reasoning"] = reasoning
+    payload["service_tier"] = "default"
+    payload["stream"] = True
+    return next_update, transport
 
 
 class SummaryMarker:
@@ -1197,7 +1427,7 @@ def log_line(record):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "jev-router/1.4"
+    server_version = "jev-router/1.5"
 
     def setup(self):
         super().setup()
@@ -1361,13 +1591,23 @@ class Handler(BaseHTTPRequestHandler):
         jev_ms = None
         decision = None
         jev_usage = None
+        decision_source = None
         scope = cache_scope(payload, task)
         affinity = cache_affinity(scope, payload)
+        leased = route_lease(scope, payload, step)
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, "default", "off"
         else:
             key = load_key()
-            if key and (task or step.get("digest") or signals.get("has_image")):
+            if leased is not None:
+                decision = leased
+                tier, depth, conf = (
+                    decision["model"], decision["effort"], decision["confidence"]
+                )
+                model, effort, speed, _ = route(tier, depth)
+                gate = decision["gate"]
+                decision_source = "lease"
+            elif key and (task or step.get("digest") or signals.get("has_image")):
                 jt0 = time.time()
                 state = jev_state(task, prev_assistant, signals, step, affinity)
                 try:
@@ -1383,14 +1623,29 @@ class Handler(BaseHTTPRequestHandler):
                                          decision["confidence"])
                     model, effort, speed, _ = route(tier, depth)
                     gate = decision["gate"]
+                    decision_source = "jev"
                 except Exception as exc:
                     model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
+                    decision_source = "technical_fallback"
                 jev_ms = int((time.time() - jt0) * 1000)
             else:
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
+                decision_source = "technical_fallback"
+
+        semantic_model = model
+        experiment_config = sol_baseline_config()
+        experiment = None
+        shadow_enabled = os.path.exists(SHADOW_PATH)
+        if decision and experiment_config and not shadow_enabled:
+            if sol_baseline_member(scope, experiment_config):
+                experiment = "all_sol"
+                if gate != "astra_policy" and model in TIERS:
+                    model = SOL
+            else:
+                experiment = "routed"
 
         would = None
-        if os.path.exists(SHADOW_PATH):
+        if shadow_enabled:
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
             model, effort, speed, gate = ASTRA, None, "default", "shadow(astra)"
 
@@ -1398,6 +1653,8 @@ class Handler(BaseHTTPRequestHandler):
         # observed quota failure) the native model ladder is replaced — GLM for frontier
         # steps, deepseek for the rest. Otherwise luna/terra/sol/astra run untouched.
         dry_reason = native_dry()
+        if dry_reason:
+            experiment = None
         native_model = model
         if dry_reason and model in TIERS:
             model, effort = dry_target(native_model, effort)
@@ -1410,25 +1667,24 @@ class Handler(BaseHTTPRequestHandler):
         marker = route_marker(shown["model"], shown["effort"])
         signature = presentation_signature(payload, shown)
 
-        def apply_route(payload, model, effort):
-            payload["model"] = model
-            if effort:
-                reasoning = payload.get("reasoning")
-                reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-                reasoning["effort"] = effort
-                payload["reasoning"] = reasoning
-            # Explicitly override any Fast preference inherited from the client,
-            # including kill-switch, shadow, and retried fallback requests.
-            payload["service_tier"] = "default"
-            payload["stream"] = True  # the local caller edge requires streaming
-            return payload
+        original_reasoning = (
+            dict(payload["reasoning"]) if isinstance(payload.get("reasoning"), dict) else None
+        )
+        injected_update = None
+        effort_transport = None
 
-        apply_route(payload, model, effort)
+        def apply_route(model, effort):
+            nonlocal injected_update, effort_transport
+            injected_update, effort_transport = apply_route_payload(
+                payload, model, effort, original_reasoning, injected_update
+            )
+
+        apply_route(model, effort)
 
         out_path = "/v1/responses"
         self._attempts = []
         status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
-            payload, out_path, stream_requested, debug, marker, model, signature)
+            payload, out_path, stream_requested, debug, marker, model, signature, effort)
         retried = False
         fallback = None
         if quota_hit and not dry_reason:
@@ -1438,7 +1694,7 @@ class Handler(BaseHTTPRequestHandler):
             # after the reset is served by the native native model ladder again.
             mark_native_dry("quota", resets_at=resets_at)
             model, effort = dry_target(native_model, effort)
-            apply_route(payload, model, effort)
+            apply_route(model, effort)
             retried = True
             # The log records the state this call entered, not the one it started
             # in: reading `dry: None` next to `codex_dry(retry)` is how a flip
@@ -1448,7 +1704,7 @@ class Handler(BaseHTTPRequestHandler):
             marker = route_marker(model, effort)
             signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature)
+                payload, out_path, stream_requested, debug, marker, model, signature, effort)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
@@ -1462,12 +1718,12 @@ class Handler(BaseHTTPRequestHandler):
             # live session on 18 September 2026 after the handoff.
             fallback = other_tandem(model)
             model, effort = fallback, tandem_effort(effort, native_model)
-            apply_route(payload, model, effort)
+            apply_route(model, effort)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
             signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature)
+                payload, out_path, stream_requested, debug, marker, model, signature, effort)
         if unwritten is not None:
             # Every model that could have served this turn refused it, and the
             # refusal was held back only because another attempt might have
@@ -1479,7 +1735,22 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(unwritten)
 
-        remember_cache_model(scope, payload, model, status)
+        final_attempt = None
+        for attempt in reversed(self._attempts):
+            if attempt.get("model") == model and attempt.get("status") == 200:
+                final_attempt = attempt
+                break
+        completed_status = (
+            200 if final_attempt
+            and final_attempt.get("terminal_type") == "response.completed"
+            else status if status != 200 else 502
+        )
+        remember_cache_model(
+            scope, payload, model, completed_status,
+            usage=final_attempt.get("usage") if final_attempt else None,
+            effort=effort,
+        )
+        remember_route_lease(scope, payload, step, decision, completed_status)
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "policy_version": POLICY_VERSION,
@@ -1489,6 +1760,9 @@ class Handler(BaseHTTPRequestHandler):
             "base_tier": decision["base_model"] if decision else None,
             "jev_usage": jev_usage,
             "attempts": self._attempts,
+            "decision_source": decision_source,
+            "lease": decision.get("lease") if decision else None,
+            "lease_hit": decision_source == "lease",
             "gate": gate,
             "tier": tier,
             "conf": conf,
@@ -1497,8 +1771,14 @@ class Handler(BaseHTTPRequestHandler):
             "effort": effort,
             "speed": speed,
             "native": native_model,
+            "semantic_model": semantic_model,
+            "experiment": experiment,
+            "experiment_percent": (
+                experiment_config.get("percent") if experiment_config else None
+            ),
             "dry": dry_reason,
-            "routing_scope": "call",
+            "routing_scope": decision.get("lease") if decision else "call",
+            "effort_transport": effort_transport,
             "cache_scope": scope,
             "cache_state": affinity,
             "cache_key_present": isinstance(payload.get("prompt_cache_key"), str)
@@ -1521,7 +1801,10 @@ class Handler(BaseHTTPRequestHandler):
             "task_chars": len(task),
         })
 
-    def _forward(self, payload, out_path, stream_requested, debug, marker, model, signature=None):
+    def _forward(
+        self, payload, out_path, stream_requested, debug, marker, model,
+        signature=None, effective_effort=None,
+    ):
         """One relay attempt to the local caller edge, streamed straight back.
 
         Returns (status, out_kind, ctype, quota_hit, unwritten, resets_at).
@@ -1538,7 +1821,7 @@ class Handler(BaseHTTPRequestHandler):
         status = 0
         out_kind = ""
         ctype = ""
-        attempt = {"model": model, "effort": (payload.get("reasoning") or {}).get("effort"),
+        attempt = {"model": model, "effort": effective_effort,
                    "speed": payload.get("service_tier"), "status": None,
                    "terminal_type": None, "usage": None}
         self._attempts.append(attempt)

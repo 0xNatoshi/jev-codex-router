@@ -72,7 +72,8 @@ class Usage(unittest.TestCase):
         entries = [
             {"cache_scope": "session-a", "native": j.LUNA, "attempts": [{
                 "model": j.LUNA,
-                "usage": {"input_tokens": 1000, "cached_input_tokens": 800},
+                "usage": {"input_tokens": 1000, "cached_input_tokens": 800,
+                          "cache_write_input_tokens": 100},
             }]},
             {"cache_scope": "session-a", "native": j.SOL, "attempts": [{
                 "model": j.SOL,
@@ -100,9 +101,42 @@ class Usage(unittest.TestCase):
         self.assertEqual(cache["unknown_attempts"], 1)
         self.assertEqual(cache["hit_attempts"], 2)
         self.assertEqual(cache["cached_share_pct"], 53.3)
+        self.assertEqual(cache["cache_write_input_tokens"], 100)
+        self.assertEqual(cache["write_observed_attempts"], 1)
         self.assertEqual(cache["by_model"][j.LUNA]["sessions"], 1)
         self.assertEqual(cache["by_model"][j.LUNA]["hit_rate_pct"], 100.0)
         self.assertEqual(cache["by_model"][j.SOL]["cached_share_pct"], 0.0)
+
+    def test_route_leases_and_experiment_cohorts_are_reported_separately(self):
+        usage = {"input_tokens": 1000, "cached_input_tokens": 800, "output_tokens": 10}
+        entries = [
+            {
+                "experiment": "routed", "cache_scope": "a", "decision_source": "jev",
+                "lease": "user_turn", "jev_usage": {"input_tokens": 120},
+                "status": 200, "native": j.LUNA,
+                "attempts": [{"model": j.LUNA, "speed": "default", "usage": usage}],
+            },
+            {
+                "experiment": "routed", "cache_scope": "a", "decision_source": "lease",
+                "lease": "user_turn", "lease_hit": True, "status": 200, "native": j.LUNA,
+                "attempts": [{"model": j.LUNA, "speed": "default", "usage": usage}],
+            },
+            {
+                "experiment": "all_sol", "cache_scope": "b", "decision_source": "jev",
+                "lease": "one_call", "jev_usage": {"inputTokens": 140},
+                "status": 200, "native": j.SOL,
+                "attempts": [{"model": j.SOL, "speed": "default", "usage": usage}],
+            },
+        ]
+        efficiency = report.routing_efficiency(entries)
+        self.assertEqual(efficiency["jev_decisions"], 2)
+        self.assertEqual(efficiency["lease_hits"], 1)
+        self.assertEqual(efficiency["decision_calls_avoided_pct"], 33.3)
+        self.assertEqual(efficiency["observed_jev_input_tokens"], 260)
+        experiment = report.experiment_comparison(entries)
+        self.assertEqual(experiment["cohorts"]["routed"]["turns"], 2)
+        self.assertEqual(experiment["cohorts"]["routed"]["lease_hits"], 1)
+        self.assertEqual(experiment["cohorts"]["all_sol"]["turns"], 1)
 
 
 if __name__ == "__main__":

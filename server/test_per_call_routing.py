@@ -1,10 +1,9 @@
-"""Per-call routing keeps Jev's view compact and the executor's replay complete.
+"""Measured routing keeps Jev's view compact and the executor replay complete.
 
 The contract pinned here is:
 
-1. every model call, including tool continuations and post-compaction calls,
-   gets a fresh Jev decision;
-2. different sub-actions may therefore use different models;
+1. user turns and changed/error tool phases get a fresh Jev decision;
+2. explicit leases may reuse a route across safe clean continuations;
 3. the canonical Responses request and prompt_cache_key are preserved for the
    selected model; the compact Jev dossier never becomes execution context;
 4. cache telemetry identifies a session only by a non-reversible local hash.
@@ -28,19 +27,21 @@ from routing_policy import route_choice  # noqa: E402
 COMPLETED = (
     b'data: {"type":"response.created","response":{"id":"resp_call"}}\n\n'
     b'data: {"type":"response.completed","response":{"id":"resp_call","status":"completed",'
-    b'"output":[]}}\n\n'
+    b'"output":[],"usage":{"input_tokens":1000,"output_tokens":10,'
+    b'"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":50}}}}\n\n'
     b'data: [DONE]\n\n'
 )
 
 
-def answer(tier, depth, astra_required=False):
-    pair = route_choice(tier, depth, astra_required)
+def answer(tier, depth, astra_required=False, lease="one_call"):
+    pair = route_choice(tier, depth, astra_required, lease)
     return {
         "model": "jev-test",
         "answers": {
             "astra_policy": {"choice": pair["astra_policy"], "confidence": 0.3},
             "model": {"choice": pair["model"], "confidence": 0.3},
             "effort": {"choice": pair["effort"], "confidence": 0.3},
+            "lease": {"choice": pair["lease"], "confidence": 0.3},
         },
         "usage": {"input_tokens": 100, "output_tokens": 5},
     }
@@ -95,6 +96,8 @@ class CacheScope(unittest.TestCase):
     def setUp(self):
         with jev._cache_affinity_lock:
             jev._cache_affinity.clear()
+        with jev._route_lease_lock:
+            jev._route_leases.clear()
 
     def test_same_prompt_cache_key_has_same_private_scope(self):
         first = jev.cache_scope({"prompt_cache_key": "pck-9"}, "one")
@@ -116,19 +119,25 @@ class CacheScope(unittest.TestCase):
     def test_successful_native_calls_create_bounded_cache_affinity(self):
         payload = payload_for([message("user", "inspect")])
         scope = jev.cache_scope(payload, "inspect")
-        jev.remember_cache_model(scope, payload, jev.SOL, 200, now=100)
+        jev.remember_cache_model(
+            scope, payload, jev.SOL, 200,
+            usage={"input_tokens": 1000, "cached_input_tokens": 800},
+            effort="high", now=100,
+        )
         affinity = jev.cache_affinity(scope, payload, now=101)
         self.assertEqual(affinity, {
             "last_model": "sol",
-            "warm_models": ["sol"],
-            "context": "small",
+            "context_k": 1,
+            "models": {
+                "sol": {"state": "hot", "read_pct": 80.0, "age_s": 1, "effort": "high"},
+            },
         })
 
     def test_affinity_expires_with_the_callers_cache_ttl(self):
         payload = payload_for([message("user", "inspect")])
         payload["prompt_cache_options"]["ttl"] = "10s"
         scope = jev.cache_scope(payload, "inspect")
-        jev.remember_cache_model(scope, payload, jev.LUNA, 200, now=100)
+        jev.remember_cache_model(scope, payload, jev.LUNA, 200, usage={}, now=100)
         self.assertIsNone(jev.cache_affinity(scope, payload, now=111))
 
     def test_failed_external_or_unscoped_calls_warm_nothing(self):
@@ -143,6 +152,35 @@ class CacheScope(unittest.TestCase):
         jev.remember_cache_model(no_scope, no_key, jev.SOL, 200)
         self.assertIsNone(jev.cache_affinity(no_scope, no_key))
 
+    def test_success_without_usage_is_unknown_and_zero_read_is_only_warming(self):
+        payload = payload_for([message("user", "inspect")])
+        scope = jev.cache_scope(payload, "inspect")
+        jev.remember_cache_model(scope, payload, jev.SOL, 200, usage={}, now=100)
+        self.assertEqual(
+            jev.cache_affinity(scope, payload, now=101)["models"]["sol"]["state"],
+            "unknown",
+        )
+        jev.remember_cache_model(
+            scope, payload, jev.SOL, 200,
+            usage={"input_tokens": 2000, "cached_input_tokens": 0}, now=102,
+        )
+        evidence = jev.cache_affinity(scope, payload, now=103)["models"]["sol"]
+        self.assertEqual(evidence["state"], "warming")
+        self.assertEqual(evidence["read_pct"], 0.0)
+
+    def test_nested_cache_write_usage_is_allowlisted(self):
+        self.assertEqual(
+            jev.usage_counts({
+                "input_tokens": 100,
+                "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 20},
+            }),
+            {
+                "input_tokens": 100,
+                "cached_input_tokens": 60,
+                "cache_write_input_tokens": 20,
+            },
+        )
+
 
 class PerCallEndToEnd(unittest.TestCase):
     def setUp(self):
@@ -150,11 +188,13 @@ class PerCallEndToEnd(unittest.TestCase):
         Edge.payloads = []
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
-                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
+                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH", "SOL_BASELINE_PATH"):
             self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
         self.enterContext(mock.patch.object(jev, "STATE", tmp))
         with jev._cache_affinity_lock:
             jev._cache_affinity.clear()
+        with jev._route_lease_lock:
+            jev._route_leases.clear()
         self.records = []
         self.logged = threading.Event()
 
@@ -209,8 +249,90 @@ class PerCallEndToEnd(unittest.TestCase):
             [p["model"] for p in Edge.payloads],
             [jev.LUNA, jev.SOL, jev.TERRA, jev.ASTRA],
         )
-        self.assertEqual([r["routing_scope"] for r in self.records], ["call"] * 4)
+        self.assertEqual([r["routing_scope"] for r in self.records], ["one_call"] * 4)
         self.assertEqual(len({r["cache_scope"] for r in self.records}), 1)
+
+    def test_user_turn_lease_skips_repeat_jev_input_across_clean_tools(self):
+        opening = [message("user", "inspect these files and report")]
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            return_value=answer(jev.SOL, "medium", lease="user_turn"),
+        ) as judge:
+            self.call(payload_for(opening))
+            self.call(payload_for(opening + [tool_call("c0"), tool_step("c0", "ok")]))
+            self.call(payload_for(
+                opening + [tool_call("c1", "read_file"), tool_step("c1", "ok")]
+            ))
+        self.assertEqual(judge.call_count, 1)
+        self.assertEqual(
+            [record["decision_source"] for record in self.records],
+            ["jev", "lease", "lease"],
+        )
+        self.assertEqual([payload["model"] for payload in Edge.payloads], [jev.SOL] * 3)
+
+    def test_tool_chain_lease_ends_on_tool_change_and_error(self):
+        opening = [message("user", "run the bounded checks")]
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            side_effect=[
+                answer(jev.LUNA, "low", lease="tool_chain"),
+                answer(jev.SOL, "high"),
+                answer(jev.ASTRA, "high"),
+            ],
+        ) as judge:
+            self.call(payload_for(opening))
+            self.call(payload_for(opening + [tool_call("c0"), tool_step("c0", "ok")]))
+            self.call(payload_for(
+                opening + [tool_call("c1", "read_file"), tool_step("c1", "ok")]
+            ))
+            self.call(payload_for(
+                opening + [tool_call("c2", "read_file"), tool_step("c2", "error: failed")]
+            ))
+        self.assertEqual(judge.call_count, 3)
+        self.assertEqual(
+            [record["decision_source"] for record in self.records],
+            ["jev", "lease", "jev", "jev"],
+        )
+
+    def test_astra_effort_uses_configuration_update_without_rewriting_base_effort(self):
+        history = [message("user", "perform the final security review")]
+        sent = payload_for(history, reasoning={"effort": "low"})
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            return_value=answer(jev.ASTRA, "high", astra_required=True),
+        ):
+            self.call(sent)
+        forwarded = Edge.payloads[-1]
+        self.assertEqual(forwarded["reasoning"]["effort"], "low")
+        self.assertEqual(forwarded["input"][0], {
+            "type": "configuration_update", "reasoning": {"effort": "high"},
+        })
+        self.assertEqual(forwarded["input"][1:], history)
+        self.assertEqual(self.records[-1]["effort_transport"], "configuration_update")
+
+    def test_stable_all_sol_cohort_never_overrides_mandatory_astra(self):
+        Path(jev.SOL_BASELINE_PATH).write_text(
+            json.dumps({"percent": 100, "until": "2099-01-01T00:00:00+00:00"})
+        )
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            side_effect=[
+                answer(jev.LUNA, "low"),
+                answer(jev.TERRA, "high", astra_required=True),
+            ],
+        ):
+            self.call(payload_for([message("user", "simple task")]))
+            self.call(payload_for(
+                [message("user", "final security review")], cache_key="other"
+            ))
+        self.assertEqual(
+            [payload["model"] for payload in Edge.payloads], [jev.SOL, jev.ASTRA]
+        )
+        self.assertEqual(
+            [record["experiment"] for record in self.records], ["all_sol", "all_sol"]
+        )
+        self.assertEqual(self.records[0]["semantic_model"], jev.LUNA)
+        self.assertEqual(self.records[1]["gate"], "astra_policy")
 
     def test_next_decision_sees_successful_models_as_cache_affinity(self):
         opening = [message("user", "implement the bounded change")]
@@ -223,7 +345,8 @@ class PerCallEndToEnd(unittest.TestCase):
         second_state = judge.call_args_list[1].args[1]
         self.assertNotIn("cache_state", first_state)
         self.assertEqual(second_state["cache_state"]["last_model"], "sol")
-        self.assertEqual(second_state["cache_state"]["warm_models"], ["sol"])
+        self.assertEqual(second_state["cache_state"]["models"]["sol"]["state"], "hot")
+        self.assertEqual(second_state["cache_state"]["models"]["sol"]["read_pct"], 80.0)
         self.assertEqual(self.records[1]["cache_state"]["last_model"], "sol")
 
     def test_mandatory_review_policy_forces_astra_without_changing_replay(self):
