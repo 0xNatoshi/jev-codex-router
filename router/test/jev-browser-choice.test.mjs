@@ -201,6 +201,7 @@ test("chooseElement returns the offered element Jev picked", async () => {
 test("chooseElement abstains when Jev says the element is not on the page", async () => {
   const decision = await chooseElement(fakeTab(), {
     goal: "open green tea",
+    apiKey: "test-key",
     fetch: fakeFetch(answersFor("e5", 0.2, 0.8)),
   });
   assert.equal(decision.status, "abstain");
@@ -211,6 +212,7 @@ test("chooseElement abstains when Jev says the element is not on the page", asyn
 test("chooseElement abstains on a choice that was never offered", async () => {
   const decision = await chooseElement(fakeTab(), {
     goal: "open green tea",
+    apiKey: "test-key",
     fetch: fakeFetch(answersFor("e99", 0.9)),
   });
   assert.equal(decision.status, "abstain");
