@@ -92,6 +92,10 @@ class Edge(BaseHTTPRequestHandler):
 
 
 class CacheScope(unittest.TestCase):
+    def setUp(self):
+        with jev._cache_affinity_lock:
+            jev._cache_affinity.clear()
+
     def test_same_prompt_cache_key_has_same_private_scope(self):
         first = jev.cache_scope({"prompt_cache_key": "pck-9"}, "one")
         second = jev.cache_scope({"prompt_cache_key": "pck-9"}, "another")
@@ -109,6 +113,36 @@ class CacheScope(unittest.TestCase):
         self.assertEqual(jev.cache_scope({}, "go"), jev.cache_scope({}, "go"))
         self.assertNotEqual(jev.cache_scope({}, "go"), jev.cache_scope({}, "stop"))
 
+    def test_successful_native_calls_create_bounded_cache_affinity(self):
+        payload = payload_for([message("user", "inspect")])
+        scope = jev.cache_scope(payload, "inspect")
+        jev.remember_cache_model(scope, payload, jev.SOL, 200, now=100)
+        affinity = jev.cache_affinity(scope, payload, now=101)
+        self.assertEqual(affinity, {
+            "last_model": "sol",
+            "warm_models": ["sol"],
+            "context": "small",
+        })
+
+    def test_affinity_expires_with_the_callers_cache_ttl(self):
+        payload = payload_for([message("user", "inspect")])
+        payload["prompt_cache_options"]["ttl"] = "10s"
+        scope = jev.cache_scope(payload, "inspect")
+        jev.remember_cache_model(scope, payload, jev.LUNA, 200, now=100)
+        self.assertIsNone(jev.cache_affinity(scope, payload, now=111))
+
+    def test_failed_external_or_unscoped_calls_warm_nothing(self):
+        payload = payload_for([message("user", "inspect")])
+        scope = jev.cache_scope(payload, "inspect")
+        jev.remember_cache_model(scope, payload, jev.SOL, 500, now=100)
+        jev.remember_cache_model(scope, payload, "deepseek/test", 200, now=100)
+        self.assertIsNone(jev.cache_affinity(scope, payload, now=101))
+        no_key = payload_for([message("user", "inspect")])
+        no_key.pop("prompt_cache_key")
+        no_scope = jev.cache_scope(no_key, "inspect")
+        jev.remember_cache_model(no_scope, no_key, jev.SOL, 200)
+        self.assertIsNone(jev.cache_affinity(no_scope, no_key))
+
 
 class PerCallEndToEnd(unittest.TestCase):
     def setUp(self):
@@ -119,6 +153,8 @@ class PerCallEndToEnd(unittest.TestCase):
                      "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
             self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
         self.enterContext(mock.patch.object(jev, "STATE", tmp))
+        with jev._cache_affinity_lock:
+            jev._cache_affinity.clear()
         self.records = []
         self.logged = threading.Event()
 
@@ -175,6 +211,20 @@ class PerCallEndToEnd(unittest.TestCase):
         )
         self.assertEqual([r["routing_scope"] for r in self.records], ["call"] * 4)
         self.assertEqual(len({r["cache_scope"] for r in self.records}), 1)
+
+    def test_next_decision_sees_successful_models_as_cache_affinity(self):
+        opening = [message("user", "implement the bounded change")]
+        continuation = opening + [tool_call("c0"), tool_step("c0", "ok")]
+        choices = [answer(jev.SOL, "medium"), answer(jev.LUNA, "low")]
+        with mock.patch.object(jev, "call_jev_routed", side_effect=choices) as judge:
+            self.call(payload_for(opening))
+            self.call(payload_for(continuation))
+        first_state = judge.call_args_list[0].args[1]
+        second_state = judge.call_args_list[1].args[1]
+        self.assertNotIn("cache_state", first_state)
+        self.assertEqual(second_state["cache_state"]["last_model"], "sol")
+        self.assertEqual(second_state["cache_state"]["warm_models"], ["sol"])
+        self.assertEqual(self.records[1]["cache_state"]["last_model"], "sol")
 
     def test_mandatory_review_policy_forces_astra_without_changing_replay(self):
         history = [message("user", "Review this code for security and performance.")]

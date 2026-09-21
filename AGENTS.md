@@ -198,7 +198,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   Logs are 0600, rotate at 8 MiB and retain one backup. No new prompt excerpts
   or raw model streams are recorded; old captures are protected, not deleted.
 - **Tune the policy**: the shared contract in `server/routing_policy.py`. Keep decisions
-  joint and evidence-based; restart the server after edits.
+  joint and evidence-based; restart the server after edits. Cache affinity
+  (`last_model`, warm models within the caller TTL, coarse context size) is a
+  cost signal inside Jev's typed model choice, never a code-side model override.
 - **Backtest**: `python3 poc/backtest_savings.py --days 7` (see BACKTEST.md).
 - **Disable**: `./bin/codex-router providers generic disable jev` (keeps state);
   full rollback: also `./bin/codex-router chatgpt-session disable` and stop the
@@ -221,12 +223,15 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v8-dossier-fidelity`: one System One request asks
+- The current policy is `split-v9-cache-aware`: one System One request asks
   three independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier and reasoning effort — for every model call, including
   tool continuations and post-compaction calls. Pre-project software/project
   architecture, independent final code review and risk-focused review force Astra while
-  preserving Jev's independently selected effort. Provider retries inside one
+  preserving Jev's independently selected effort. The model question also gets
+  bounded cache affinity for the private prompt-cache scope so a sufficient warm
+  model can beat a cold switch without blocking a materially required tier.
+  Provider retries inside one
   call keep that decision.
   Routine in-progress quality checkpoints, score comparisons and fixes to established
   findings use normal routing. Good scores never waive a required final/risk review.

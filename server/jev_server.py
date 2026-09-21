@@ -16,9 +16,13 @@ speed. Confidence is logged without changing other valid choices. There are no
 keyword overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Per-call routing (v5): every model call is judged independently, so a tool loop
-may move between Luna, Terra, Sol and Astra as the next sub-action changes. Provider
-retries inside that call retain its decision. The compact Jev projection is
+Per-call routing (v6): every model call is judged independently, so a tool loop
+may move between Luna, Terra, Sol and Astra as the next sub-action changes. Jev
+also sees bounded cache affinity for the current private session: the last
+successfully served native model, the native models still warm within the
+caller's cache TTL, and a coarse context-size band. Capability remains primary,
+but a sufficient warm model avoids a needless cold replay. Provider retries
+inside that call retain its decision. The compact Jev projection is
 judgment input only: the executing model always receives the caller's canonical
 request untouched, never that projection. The caller's prompt_cache_key also
 passes through untouched, allowing each selected model to reuse its own cache
@@ -175,6 +179,16 @@ TASK_HEAD_CHARS = 250
 TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
 TASK_CLIP_MARK = "\n[...]\n"
 CONTEXT_TASK_CHARS = 320
+CACHE_DEFAULT_TTL_S = 30 * 60
+CACHE_MAX_TTL_S = 24 * 60 * 60
+CACHE_TTL_RX = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.I)
+CACHE_BANDS = (
+    (64 * 1024, "small"),
+    (256 * 1024, "medium"),
+    (1024 * 1024, "large"),
+)
+_cache_affinity_lock = threading.Lock()
+_cache_affinity = {}
 
 # Codex wraps every turn in machine-generated blocks (goal context, plugin
 # catalog, environment, skills, mode notices). They are the longest part of a
@@ -599,9 +613,11 @@ def classify(payload):
     return detail
 
 
-def jev_state(task, prev_assistant, signals, step):
+def jev_state(task, prev_assistant, signals, step, cache_state=None):
     """Strictly bounded decision dossier; never reused as execution context."""
     state = {"task": task, "step": step["step_type"]}
+    if cache_state:
+        state["cache_state"] = cache_state
     if signals.get("context_task"):
         state["active_task"] = signals["context_task"]
     if signals.get("has_image"):
@@ -622,10 +638,10 @@ def jev_state(task, prev_assistant, signals, step):
     return state
 
 
-def decision_dossier(payload):
+def decision_dossier(payload, cache_state=None):
     """Shared projection for live traffic, replay and calibration."""
     task, previous, signals = extract(payload)
-    return jev_state(task, previous, signals, classify(payload))
+    return jev_state(task, previous, signals, classify(payload), cache_state)
 
 
 def _debug_shape(payload):
@@ -676,6 +692,94 @@ def cache_scope(payload, task):
     else:
         source = "task:" + (task or "")
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_ttl_seconds(payload):
+    """Caller cache TTL, bounded to the lifetime useful for in-memory affinity."""
+    options = payload.get("prompt_cache_options")
+    raw = options.get("ttl") if isinstance(options, dict) else None
+    if not isinstance(raw, str):
+        return CACHE_DEFAULT_TTL_S
+    match = CACHE_TTL_RX.match(raw)
+    if not match:
+        return CACHE_DEFAULT_TTL_S
+    scale = {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2).lower()]
+    return min(max(float(match.group(1)) * scale, 1), CACHE_MAX_TTL_S)
+
+
+def _context_band(payload):
+    """Coarse canonical-input size: enough for cost judgment, never prompt text."""
+    try:
+        size = len(json.dumps(
+            payload.get("input"), ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8"))
+    except (TypeError, ValueError):
+        return "unknown"
+    for ceiling, label in CACHE_BANDS:
+        if size <= ceiling:
+            return label
+    return "huge"
+
+
+def cache_affinity(scope, payload, now=None):
+    """Bounded warm-cache evidence for one prompt-cache scope.
+
+    Only a real prompt_cache_key is safe for continuity. The task-derived scope
+    remains useful for aggregate telemetry but may repeat across unrelated calls.
+    """
+    raw_key = payload.get("prompt_cache_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return None
+    now = time.time() if now is None else now
+    ttl = _cache_ttl_seconds(payload)
+    with _cache_affinity_lock:
+        entry = _cache_affinity.get(scope)
+        if not isinstance(entry, dict):
+            return None
+        warm = {
+            model: seen_at for model, seen_at in entry.get("models", {}).items()
+            if model in TIERS and now - seen_at <= ttl
+        }
+        if not warm:
+            _cache_affinity.pop(scope, None)
+            return None
+        entry["models"] = warm
+        last_model = entry.get("last_model")
+        if last_model not in warm:
+            last_model = max(warm, key=warm.get)
+            entry["last_model"] = last_model
+        return {
+            "last_model": route_label(last_model)[0],
+            "warm_models": [
+                route_label(model)[0]
+                for model in TIERS
+                if model in warm
+            ],
+            "context": _context_band(payload),
+        }
+
+
+def remember_cache_model(scope, payload, model, status, now=None):
+    """Remember only successful native service; failed/fallback calls warm nothing."""
+    raw_key = payload.get("prompt_cache_key")
+    if (
+        status != 200
+        or model not in TIERS
+        or not isinstance(raw_key, str)
+        or not raw_key.strip()
+    ):
+        return
+    now = time.time() if now is None else now
+    ttl = _cache_ttl_seconds(payload)
+    with _cache_affinity_lock:
+        entry = _cache_affinity.setdefault(scope, {"models": {}})
+        entry["models"] = {
+            warm_model: seen_at
+            for warm_model, seen_at in entry.get("models", {}).items()
+            if warm_model in TIERS and now - seen_at <= ttl
+        }
+        entry["models"][model] = now
+        entry["last_model"] = model
 
 
 def route_label(model):
@@ -1258,13 +1362,14 @@ class Handler(BaseHTTPRequestHandler):
         decision = None
         jev_usage = None
         scope = cache_scope(payload, task)
+        affinity = cache_affinity(scope, payload)
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, "default", "off"
         else:
             key = load_key()
             if key and (task or step.get("digest") or signals.get("has_image")):
                 jt0 = time.time()
-                state = jev_state(task, prev_assistant, signals, step)
+                state = jev_state(task, prev_assistant, signals, step, affinity)
                 try:
                     result = call_jev_routed(key, state)
                     decision = decision_from_answers(result.get("answers"))
@@ -1374,6 +1479,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(unwritten)
 
+        remember_cache_model(scope, payload, model, status)
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "policy_version": POLICY_VERSION,
@@ -1394,6 +1500,7 @@ class Handler(BaseHTTPRequestHandler):
             "dry": dry_reason,
             "routing_scope": "call",
             "cache_scope": scope,
+            "cache_state": affinity,
             "cache_key_present": isinstance(payload.get("prompt_cache_key"), str)
                                  and bool(payload["prompt_cache_key"].strip()),
             "retried": retried,

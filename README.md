@@ -191,8 +191,14 @@ scripts share the live decision contract and reject a cache from another policy.
 
 Routing is call-scoped: every user call, tool continuation and post-compaction
 call gets a fresh Jev decision, so the serving model may change between
-sub-actions. Provider retries inside one call retain that call's decision. Jev
-receives only a bounded decision dossier: active task, step type, and—when
+sub-actions. Provider retries inside one call retain that call's decision. From
+the second successful native call in a prompt-cache scope onward, Jev also sees
+the last served native model, the native models still warm within the caller's
+cache TTL, and a coarse canonical-context size (`small` through `huge`). This is
+a cost tie-breaker, not a capability ceiling: Jev keeps a sufficient warm model
+instead of paying for a cold replay, but still moves when the remaining work
+materially needs another tier. Jev receives only a bounded decision dossier:
+active task, step type, and—when
 relevant—a short assistant-intent tail, tool name, tool-output tail or image
 flag. Short context-dependent asks such as `continue` also receive one bounded
 active-task summary from Codex's goal envelope or the preceding meaningful user
@@ -213,11 +219,11 @@ The report hashes session ids before logging them and shows actual
 `cached_input_tokens` by model, including cache hits immediately after a switch
 and when returning to a previously used model.
 
-In one observed 32k-token tool loop, Sol → Luna reused 24,832 Luna-cached tokens,
-the return to Sol reused 25,216 Sol-cached tokens, and the next Luna call reused
-its same 24,832-token prefix. This is the intended behavior: complete logical
-context on every call, with one independently warming cache per model rather
-than repeated full re-contextualization.
+Each model still owns an independent cache. Returning to a previously used model
+can reuse its prefix, but observed switches on 21 September 2026 reused only
+about one fifth of their input as cached tokens. The affinity signal makes that
+measured reprocessing cost part of Jev's next typed choice while preserving the
+complete canonical replay.
 
 ## Ask surface (`POST /ask`)
 
