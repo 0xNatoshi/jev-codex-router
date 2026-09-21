@@ -102,6 +102,9 @@ MODEL = "jev-latest"
 # one. No routing policy, no logging of the caller's state.
 ASK_PATHS = ("/ask", "/v1/ask")
 ASK_MAX_BYTES = 256 * 1024
+# Responses requests may carry image inputs, so allow more than the typed ask
+# surface while still bounding what the loopback service will buffer.
+RESP_MAX_BYTES = 8 * 1024 * 1024
 ASK_MAX_STATE_CHARS = 120_000
 ASK_MAX_QUESTIONS = 40
 ASK_TIMEOUT = 15.0
@@ -1005,18 +1008,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _body_length(self, limit):
+        """Return (length, error_status, error_message) for a JSON request body."""
+        transfer_encoding = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if transfer_encoding and transfer_encoding != "identity":
+            return None, 501, "chunked transfer encoding is not supported"
+        value = self.headers.get("Content-Length")
+        if value is None:
+            return None, 411, "Content-Length header is required"
+        try:
+            length = int(value)
+        except (TypeError, ValueError):
+            return None, 400, "invalid Content-Length header"
+        if length < 0:
+            return None, 400, "invalid Content-Length header"
+        if length > limit:
+            return None, 413, f"body too large ({length} bytes)"
+        return length, None, None
+
     def _ask(self):
         """Typed pass-through to System One for local callers (:4319, loopback only).
 
         No policy, no logging of the caller's state: the body is validated,
         forwarded as-is and only the typed answers come back.
         """
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > ASK_MAX_BYTES:
-            # Do not drain an oversized body: answer and close so a wrong or
-            # hostile Content-Length cannot make the server buffer it.
+        length, error_status, error_message = self._body_length(ASK_MAX_BYTES)
+        if error_status:
             self.close_connection = True
-            return self._json(413, {"error": {"message": f"body too large ({length} bytes)"}})
+            return self._json(error_status, {"error": {"message": error_message}})
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw.decode("utf-8"))
@@ -1077,7 +1096,10 @@ class Handler(BaseHTTPRequestHandler):
         if "/responses" not in path:
             return self._json(404, {"error": {"message": f"unsupported path {path}"}})
 
-        length = int(self.headers.get("Content-Length") or 0)
+        length, error_status, error_message = self._body_length(RESP_MAX_BYTES)
+        if error_status:
+            self.close_connection = True
+            return self._json(error_status, {"error": {"message": error_message}})
         raw = self.rfile.read(length) if length else b""
         try:
             payload = json.loads(raw.decode("utf-8"))

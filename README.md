@@ -294,6 +294,8 @@ curl -s http://127.0.0.1:4319/health
   `invalid_responses_response`).
 - The shared ChatGPT session authorization has a validity window; re-run
   `chatgpt-session enable` if native routing stops after a while.
+- JSON request bodies need a `Content-Length` header; `/v1/responses` accepts up
+  to 8 MiB and rejects chunked transfer encoding before forwarding upstream.
 - Code comments are in French for now (author's working language) — PRs welcome.
 
 ## Security

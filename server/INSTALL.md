@@ -80,6 +80,9 @@ for the distinction between the built-in endpoint override and custom providers.
   `text/event-stream; charset=utf-8` on stream relays.
 - `stream: true` is forced upstream (the edge requires it); non-stream callers
   get the final response object assembled from the SSE stream.
+- JSON request bodies need a `Content-Length` header and are capped at 8 MiB;
+  chunked transfer encoding is rejected because the loopback handler does not
+  decode it before applying the limit.
 - One Jev decision per request (≈0.6 s, included in total latency). Tool-loop
   continuations are re-classified on the same last-user text; they land on the
   same tier in practice, and everything is logged for tuning.

@@ -9,6 +9,7 @@ chat quota.
 """
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -142,6 +143,58 @@ class TandemHandoff(unittest.TestCase):
             result = error.code, body
         self.assertTrue(self.logged.wait(2), "wait for post-response state and telemetry")
         return result
+
+    def raw_post(self, content_length=None, transfer_encoding=None, body=b"{}"):
+        """Send framing that urllib.request intentionally normalises for us."""
+        connection = socket.create_connection(
+            ("127.0.0.1", self.server.server_address[1]), timeout=10
+        )
+        try:
+            headers = [
+                b"POST /v1/responses HTTP/1.1",
+                b"Host: localhost",
+                b"Content-Type: application/json",
+            ]
+            if content_length is not None:
+                headers.append(f"Content-Length: {content_length}".encode())
+            if transfer_encoding is not None:
+                headers.append(f"Transfer-Encoding: {transfer_encoding}".encode())
+            connection.sendall(b"\r\n".join(headers) + b"\r\n\r\n" + body)
+            answer = b""
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                answer += chunk
+        finally:
+            connection.close()
+        head, _, response_body = answer.partition(b"\r\n\r\n")
+        status = int(head.splitlines()[0].split()[1])
+        return status, response_body
+
+    def test_rejects_an_oversized_response_body_before_forwarding(self):
+        status, body = self.raw_post(content_length=jev.RESP_MAX_BYTES + 1)
+        self.assertEqual(status, 413)
+        self.assertIn(b"too large", body)
+        self.assertEqual(Edge.attempts, [])
+
+    def test_rejects_an_invalid_response_content_length(self):
+        status, body = self.raw_post(content_length="not-a-number")
+        self.assertEqual(status, 400)
+        self.assertIn(b"invalid Content-Length", body)
+        self.assertEqual(Edge.attempts, [])
+
+    def test_rejects_a_response_without_content_length(self):
+        status, body = self.raw_post()
+        self.assertEqual(status, 411)
+        self.assertIn(b"Content-Length", body)
+        self.assertEqual(Edge.attempts, [])
+
+    def test_rejects_chunked_response_bodies(self):
+        status, body = self.raw_post(transfer_encoding="chunked", body=b"0\r\n\r\n")
+        self.assertEqual(status, 501)
+        self.assertIn(b"chunked", body)
+        self.assertEqual(Edge.attempts, [])
 
     def test_a_refused_tandem_call_is_retried_on_the_sibling(self):
         Edge.refuse = (jev.GO_FRONTIER,)
