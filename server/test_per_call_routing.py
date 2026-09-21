@@ -112,6 +112,7 @@ class CacheScope(unittest.TestCase):
 
 class PerCallEndToEnd(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(jev, "local_secret", return_value="fixture-local"))
         Edge.payloads = []
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
@@ -147,7 +148,7 @@ class PerCallEndToEnd(unittest.TestCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.server.server_address[1]}/v1/responses",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer fixture-local"},
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             result = response.status, response.read()

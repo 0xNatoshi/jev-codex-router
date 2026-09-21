@@ -55,6 +55,7 @@ class Edge(BaseHTTPRequestHandler):
     refuse = ()
     body = COMPLETED
     reset_at = 0
+    refuse_status = 429
 
     def log_message(self, *args):
         pass
@@ -69,8 +70,10 @@ class Edge(BaseHTTPRequestHandler):
             # The shape the edge answers an exhausted allowance with: a JSON error
             # whose text matches the quota detector, and no content type that
             # would make the relay treat it as a stream.
-            data = json.dumps({"error": {"message": "rate limit reached for this model"}}).encode()
-            self.send_response(429)
+            message = ("rate limit reached for this model" if self.refuse_status == 429
+                       else "temporarily unavailable")
+            data = json.dumps({"error": {"message": message}}).encode()
+            self.send_response(self.refuse_status)
             self.send_header("Content-Type", "application/json")
             if type(self).reset_at:
                 self.send_header("x-codex-primary-reset-at", str(int(type(self).reset_at)))
@@ -85,11 +88,13 @@ class Edge(BaseHTTPRequestHandler):
 
 class TandemHandoff(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(jev, "local_secret", return_value="fixture-local"))
         Edge.attempts = []
         Edge.payloads = []
         Edge.refuse = ()
         Edge.body = COMPLETED
         Edge.reset_at = 0
+        Edge.refuse_status = 429
         # Tests must not read the installed sentinels, write the live decision
         # log, or depend on the user's current fallback model configuration.
         tmp = self.enterContext(tempfile.TemporaryDirectory())
@@ -141,7 +146,7 @@ class TandemHandoff(unittest.TestCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.server.server_address[1]}/v1/responses",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer fixture-local"},
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -175,6 +180,54 @@ class TandemHandoff(unittest.TestCase):
         self.assertEqual({effort for _model, effort in Edge.attempts}, {"high"})
         self.assertEqual([p["service_tier"] for p in Edge.payloads],
                          ["default", "default"])
+
+    def test_nonquota_service_failure_is_held_before_retry(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        Edge.refuse_status = 503
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                status, body = self.call(stream=stream)
+                self.assertEqual(status, 200, body)
+                self.assertNotIn(b"temporarily unavailable", body)
+                self.assertIn(b"completed", body)
+
+    def test_single_fallback_does_not_retry_itself(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        Edge.refuse_status = 503
+        with mock.patch.object(jev, "GO_TANDEM", (jev.GO_FRONTIER,)):
+            status, _ = self.call()
+        self.assertEqual(status, 503)
+        self.assertEqual(len(Edge.attempts), 1)
+
+    def test_incomplete_and_failed_nonstream_responses_keep_their_contract(self):
+        for terminal in ("incomplete", "failed"):
+            with self.subTest(terminal=terminal):
+                response = {"id": "r", "status": terminal, "output": [],
+                            "incomplete_details": {"reason": "max_output_tokens"}}
+                Edge.body = ("data: " + json.dumps(
+                    {"type": "response." + terminal, "response": response}) + "\n\n").encode()
+                status, body = self.call()
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), response)
+
+    def test_nonstream_truncated_stream_becomes_explicit_error(self):
+        Edge.body = b'data: {"type":"response.created","response":{"id":"r"}}\n\n'
+        status, body = self.call()
+        self.assertEqual(status, 502)
+        self.assertIn("error", json.loads(body))
+
+    def test_structured_outputs_never_receive_a_display_header(self):
+        with open(jev.SIGNATURE_PATH, "w"):
+            pass
+        item = {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"ok":true}'}]}
+        Edge.body = ("data: " + json.dumps({"type": "response.completed",
+                     "response": {"id": "r", "status": "completed", "output": [item]}})
+                     + "\n\n").encode()
+        status, body = self.call(text={"format": {"type": "json_schema", "name": "fixture"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(json.loads(body)["output"][0]["content"][0]["text"]),
+                         {"ok": True})
 
     def test_native_calls_replace_client_fast_and_max_with_the_jev_decision(self):
         jev.native_dry = lambda: None

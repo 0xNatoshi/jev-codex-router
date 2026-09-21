@@ -11,7 +11,7 @@ No impact on the router: read-only + Jev calls. Real routing is untouched.
 
 Usage: python3 shadow_replay.py [--limit 40] [--days 3] [--dry] [--quiet] [--log PATH] [--ignore-seen]
 """
-import argparse, datetime, glob, importlib.util, json, os, re, sys, time
+import argparse, datetime, glob, hashlib, importlib.util, json, os, re, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("poc", os.path.join(HERE, "route_poc.py"))
@@ -21,11 +21,7 @@ _spec.loader.exec_module(poc)
 
 # The task text and the continuity bound come from the router itself, so the
 # shadow log records what production sends instead of a second opinion about it.
-_jspec = importlib.util.spec_from_file_location(
-    "jev_server", os.path.join(HERE, "..", "server", "jev_server.py"))
-jev = importlib.util.module_from_spec(_jspec)
-sys.modules["jev_server"] = jev
-_jspec.loader.exec_module(jev)
+import jev_server as jev
 
 SESS_ROOT = os.path.expanduser("~/.codex/sessions")
 DEFAULT_LOG = os.path.join(HERE, "..", "shadow-log.jsonl")
@@ -56,12 +52,14 @@ def _message_text(p):
 
 def extract_user_turns(path, cap=6):
     """[{text, cwd, prev}] — user turns + context (session cwd, last assistant message)."""
-    out, cwd, prev = [], "", ""
+    out, cwd, prev, history = [], "", "", []
+    handle = None
     try:
-        for line in open(path, encoding="utf-8"):
+        handle = open(path, encoding="utf-8")
+        for line in handle:
             if len(out) >= cap:
                 break
-            if '"session_meta"' not in line and '"role"' not in line:
+            if '"session_meta"' not in line and '"response_item"' not in line:
                 continue
             try:
                 d = json.loads(line)
@@ -72,39 +70,40 @@ def extract_user_turns(path, cap=6):
             if t == "session_meta":
                 cwd = p.get("cwd") or cwd
                 continue
-            if t != "response_item" or not isinstance(p, dict) or p.get("type") != "message":
+            if t != "response_item" or not isinstance(p, dict):
+                continue
+            history.append(p)
+            if p.get("type") != "message":
                 continue
             role = p.get("role")
             if role == "assistant":
-                txt = re.sub(r"\s+", " ", TAG_CLEAN.sub(" ", _message_text(p))).strip()
+                txt = jev._content_text(p.get("content")).strip()
                 if txt:
                     prev = txt[-240:]
             elif role == "user":
-                text = re.sub(r"\s+", " ", TAG_CLEAN.sub(" ", _message_text(p))).strip()
-                if len(text) < 12 or text.startswith("## "):
-                    continue
+                text = jev._content_text(p.get("content")).strip()
                 ask = jev.task_for_jev(text)
                 if not ask:
                     continue  # envelopes only: there is no request in this turn
-                out.append({"text": text, "ask": ask, "cwd": cwd, "prev": prev})
+                # Apply the same presentation cleanup and dossier builder as live.
+                payload = {"input": history}
+                jev.strip_signatures(payload)
+                out.append({"text": text, "ask": ask, "cwd": cwd, "prev": prev,
+                            "state": jev.decision_dossier(payload)})
     except Exception as e:
         print(f"  !! {os.path.basename(path)}: {e!r}", file=sys.stderr)
+    finally:
+        if handle is not None:
+            handle.close()
     return out
 
 
 def build_state(turn):
-    text = turn["text"]
-    cwd = turn.get("cwd") or ""
-    signals = {
-        "source": "codex-session",
-        "project": os.path.basename(cwd.rstrip("/")) if cwd else None,
-        "has_files": bool(re.search(r"# Files (mentioned|pasted) by the user", text)),
-        "short_followup": len(text) < 60,
-    }
-    state = {"task": turn["ask"], "signals": signals}
-    if turn.get("prev"):
-        state["previous_assistant"] = turn["prev"]
-    return state
+    return turn["state"]
+
+
+def state_key(state):
+    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
 
 def load_seen(log_path):
@@ -117,7 +116,7 @@ def load_seen(log_path):
                 continue
             if d.get("policy_version") != poc.POLICY_VERSION:
                 continue
-            k = (d.get("task") or "")[:80].lower()
+            k = d.get("dossier_key")
             if k:
                 seen.add(k)
     return seen
@@ -162,7 +161,7 @@ def main():
     tasks, skipped = [], 0
     for path in files:
         for turn in extract_user_turns(path):
-            k = turn["ask"][:80].lower()
+            k = state_key(build_state(turn))
             if k in seen:
                 skipped += 1
                 continue
@@ -197,7 +196,7 @@ def main():
                 conf, gate = decision["confidence"], decision["gate"]
                 n_tok += (resp.get("usage", {}) or {}).get("input_tokens", 0) or 0
                 rec = {"at": ts, "state_v": 3, "policy_version": poc.POLICY_VERSION, "session": os.path.basename(path),
-                       "task": turn["ask"][:140], "project": state["signals"].get("project"),
+                       "dossier_key": state_key(state),
                        "tier": model, "tier_conf": conf,
                        "depth": effort, "gate": gate,
                        "route": {"model": model, "effort": effort, "speed": speed},

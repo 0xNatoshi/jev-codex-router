@@ -1,7 +1,7 @@
 """Compact Jev contract: model, effort and mandatory-frontier policy."""
 import math
 
-POLICY_VERSION = "split-v7-review-stages"
+POLICY_VERSION = "split-v8-dossier-fidelity"
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TERRA = "gpt-5.6-terra"
 TIERS = (LUNA, TERRA, SOL, ASTRA)

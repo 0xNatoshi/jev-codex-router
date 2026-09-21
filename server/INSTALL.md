@@ -6,6 +6,20 @@ the `jev/auto` model. For each turn it asks Jev for a route
 the Codex Router's local caller edge, which serves native GPT models from the
 shared ChatGPT session.
 
+## Local authentication
+
+After registering `jev`, run from the Jev checkout:
+
+```sh
+node server/configure-auth.mjs /path/to/codex-router
+```
+
+This uses the parent's credential transaction, retains an existing credential,
+and prints metadata only. The Jev server reads the protected `jev.key` in the
+parent's `generic-provider-credentials` directory. All POSTs require a Bearer
+header; the parent adds it automatically. Direct `/ask` clients must add it.
+No OpenAI Platform API key is needed for this local ChatGPT-session relay.
+
 ## Lifecycle
 
 | Action | Command |

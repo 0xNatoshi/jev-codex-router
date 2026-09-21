@@ -13,6 +13,8 @@ and compares the "API-equivalent" cost of both scenarios at published prices
 Usage: python3 backtest_savings.py [--days 7] [--limit-unique 300]
 """
 import argparse, datetime, glob, hashlib, importlib.util, json, os, re, sys, time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server"))
+import jev_server as jev
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("poc", os.path.join(HERE, "route_poc.py"))
@@ -37,7 +39,7 @@ TAG_CLEAN = re.compile(r"<[^>]+>")
 
 def turn_key(turn):
     # Identical short replies can refer to entirely different preceding work.
-    return hashlib.sha256(json.dumps({k: turn.get(k) for k in ("text", "prev", "cwd")},
+    return hashlib.sha256(json.dumps(turn.get("state") or {k: turn.get(k) for k in ("text", "prev", "cwd")},
                                      sort_keys=True).encode()).hexdigest()
 
 
@@ -72,10 +74,11 @@ def main():
     all_turns = []
     for path in files:
         # sequential parse: task_started → user text → cumulative turn tokens
-        seq, cur, last_assist, model2, cwd2 = [], None, "", "gpt-6-astra", ""
+        seq, cur, last_assist, model2, cwd2 = [], None, "", "unknown-model", ""
+        history = []
         with open(path, encoding="utf-8") as session_file:
             for line in session_file:
-                if '"session_meta"' not in line and '"role"' not in line and '"task_started"' not in line \
+                if '"session_meta"' not in line and '"response_item"' not in line and '"task_started"' not in line \
                    and '"token_usage_record"' not in line and '"thread_settings_applied"' not in line:
                     continue
                 try:
@@ -86,29 +89,37 @@ def main():
                 if t == "session_meta":
                     cwd2 = p.get("cwd") or cwd2; continue
                 if t == "event_msg" and p.get("type") == "task_started":
-                    cur = {"turn_id": p.get("turn_id"), "text": "", "prev": last_assist, "tok": None}
+                    cur = {"turn_id": p.get("turn_id"), "text": "", "prev": last_assist,
+                           "tok": None, "model": model2, "cwd": cwd2}
                     seq.append(cur); continue
                 if t == "event_msg" and p.get("type") == "thread_settings_applied":
                     th = p.get("thread_settings") or {}
-                    if th.get("model"): model2 = th["model"]
+                    if th.get("model"):
+                        model2 = th["model"]
                     continue
-                if t == "response_item" and isinstance(p, dict) and p.get("type") == "message":
+                if t == "response_item" and isinstance(p, dict):
+                    history.append(p)
+                    if p.get("type") != "message":
+                        continue
                     role = p.get("role")
-                    text = " ".join((c.get("text") or "") for c in (p.get("content") or [])
-                                    if isinstance(c, dict) and c.get("type") in ("input_text", "output_text", "text"))
-                    text = re.sub(r"\s+", " ", TAG_CLEAN.sub(" ", text)).strip()
+                    text = jev._content_text(p.get("content")).strip()
                     if role == "user" and cur is not None and not cur["text"]:
-                        if len(text) >= 12 and not text.startswith("## ") and "plugins that are available" not in text[:80]:
+                        if jev.task_for_jev(text):
                             cur["text"] = text
+                            payload = {"input": history}
+                            jev.strip_signatures(payload)
+                            cur["state"] = jev.decision_dossier(payload)
                     elif role == "assistant" and text:
                         last_assist = text[-240:]
                     continue
                 if t == "token_usage_record" and cur is not None and p.get("turn_id") == cur.get("turn_id"):
+                    if cur["tok"] is None:
+                        cur["model"] = model2
+                    elif cur["model"] != model2:
+                        cur["model"] = "mixed-model-turn"
                     cur["tok"] = p.get("turn_token_usage") or p.get("usage")
         for tk in seq:
             if tk["text"] and tk["tok"] and (tk["tok"].get("input_tokens") or 0) > 0:
-                tk["model"] = model2
-                tk["cwd"] = cwd2
                 all_turns.append(tk)
 
     print(f"usable turns: {len(all_turns)}")
@@ -119,7 +130,7 @@ def main():
     unique = {}
     for tk in all_turns:
         key = turn_key(tk)
-        unique.setdefault(key, {"n": 0, "text": tk["text"], "prev": tk["prev"], "cwd": tk["cwd"]})
+        unique.setdefault(key, {"n": 0, "state": tk["state"]})
         unique[key]["n"] += 1
     keys = list(unique)[: args.limit_unique]
     print(f"unique prompts to classify with Jev: {len(keys)}")
@@ -141,10 +152,7 @@ def main():
     t0 = time.time()
     for i, k in enumerate([] if args.from_cache else keys, 1):
         u = unique[k]
-        state = {"task": u["text"][:500], "signals": {"source": "backtest",
-                 "project": os.path.basename((u.get("cwd") or "").rstrip("/")) or None}}
-        if u.get("prev"):
-            state["previous_assistant"] = u["prev"]
+        state = u["state"]
         try:
             resp = poc.post_json("https://api.typesafe.ai/v1/systemone", key,
                                  {"model": "jev-latest", "state": state, "questions": q})

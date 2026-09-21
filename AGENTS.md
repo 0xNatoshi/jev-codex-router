@@ -11,7 +11,8 @@ A local server plus a Codex Router extension that adds one model to the Codex
 picker — **"Jev Codex Router"** (`jev/auto`). Every turn sent to it is classified by
 [Jev](https://docs.typesafe.ai) (TypeSafe System One) and served by the
 cheapest model that can handle it, at a thinking depth adapted to the task.
-All traffic stays on loopback; the design is fail-open; there is a kill switch.
+Local hops stay on loopback; Jev calls go to TypeSafe. Authenticated model
+requests are fail-open on Jev classification errors; there is a kill switch.
 
 ## Hard rules (never violate)
 
@@ -105,6 +106,17 @@ cd <router checkout>
 # expect:  SHOW jev   Jev Router (openai-responses)
 ```
 
+Provision its local transport credential via the parent's protected transaction:
+
+```bash
+node <jev checkout>/server/configure-auth.mjs <router checkout>
+```
+
+All POST requests require this credential, loaded from
+`~/.codex/codex-router/generic-provider-credentials/jev.key` (0600).
+The parent attaches it automatically; custom `/ask` clients must load it in
+memory and send a Bearer header. Never put it in a URL or command argument.
+
 ### 4 — Share native ChatGPT access with local clients
 
 ```bash
@@ -139,15 +151,11 @@ user can select **Jev Codex Router**.
 ## End-to-end verification (must pass before declaring success)
 
 ```bash
-SEC=$(cat ~/.codex/codex-router/caller-secret | tr -d '\n')
-curl -s -N -m 120 -X POST "http://127.0.0.1:4202/_codex-router/$SEC/v1/responses" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"jev/auto","input":[{"role":"user","content":[{"type":"input_text","text":"Say OK"}]}],"stream":true}' | head -c 400
+python3 server/smoke.py
 ```
 
-Expect an SSE stream: `data: {"type":"response.created",...,"model":"gpt-5.6-luna",…`
-(a trivial prompt routes to luna) ending with `response.completed` and
-`data: [DONE]`. Then:
+Expect HTTP 200 and status `completed`, with a selected native model. The
+script refuses a stale running policy and never prints credentials. Then:
 
 ```bash
 tail -1 ~/.codex/codex-router/jev-router-live.jsonl
@@ -166,9 +174,11 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 - **Kill switch** (instant, no restart): `touch ~/.codex/codex-router/jev-router.off`
   → the server relays to astra without calling Jev. Remove the file to re-enable.
 - **Codex-dry tandem** (only while native usage is exhausted):
-  `touch ~/.codex/codex-router/jev-router.codex-dry` → frontier-tier calls go to
-  `opencode-go/glm-5.3-flash`, every other tier to
-  `opencode-go/deepseek-v4.1-flash`; remove the file to return to the
+  `touch ~/.codex/codex-router/jev-router.codex-dry` → calls go to the configured
+  fallback (default `deepseek/deepseek-v4.1-flash` for all tiers). Set
+  `JEV_FALLBACK_STANDARD` / `JEV_FALLBACK_FRONTIER` to existing configured routes
+  at service startup for distinct targets; retries never repeat an identical target.
+  Remove the file to return to the
   luna/terra/sol/astra native model ladder. An automatic flip (429 / usage-limit response) also
   retries the failed call on the tandem, then lasts until the instant the edge
   announced for the window reset (30 minutes when the refusal announces none,
@@ -183,8 +193,10 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 - **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
   are logged (`would` field) while every call is still served by astra.
 - **Debug capture** (bounded): `touch ~/.codex/codex-router/jev-router.debug`
-  → request shapes in `jev-router-debug.jsonl` and raw response streams in
+  → request shapes in `jev-router-debug.jsonl` and transport counters in
   `jev-router-debug-stream.log`. Remove the file to stop.
+  Logs are 0600, rotate at 8 MiB and retain one backup. No new prompt excerpts
+  or raw model streams are recorded; old captures are protected, not deleted.
 - **Tune the policy**: the shared contract in `server/routing_policy.py`. Keep decisions
   joint and evidence-based; restart the server after edits.
 - **Backtest**: `python3 poc/backtest_savings.py --days 7` (see BACKTEST.md).
@@ -209,7 +221,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v7-review-stages`: one System One request asks
+- The current policy is `split-v8-dossier-fidelity`: one System One request asks
   three independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier and reasoning effort — for every model call, including
   tool continuations and post-compaction calls. Pre-project software/project
@@ -236,6 +248,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   not review. Luna needs explicit mechanical work; implied intent and autonomous
   investigation belong to Sol. Optimize total task cost including clarification
   and correction turns, without scenario regexes or automatic opening floors.
+  Every short ask receives one bounded preceding task and assistant proposal.
+  The latest tool batch contributes counts and at most three excerpts, errors
+  first. Replay and live routing share the same dossier builder.
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run

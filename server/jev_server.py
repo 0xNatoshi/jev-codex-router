@@ -27,15 +27,16 @@ Context continuity does not depend on those cache hits: every selected model
 receives the full canonical request. Cache reuse only changes how much of that
 identical prefix the provider must process and bill again.
 
-Input handling (v5): Jev sees the current ask, never the thread — the task is
+Input handling (v8): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
 (goal context, plugin catalog, environment, skills) and clipped head+tail.
-Thread length never reaches the judge. A tool continuation adds only its tool
-name, a short output tail and a short assistant-intent tail. The complete
+Thread length never reaches the judge. A tool continuation adds a bounded
+batch summary (errors first) and a short assistant-intent tail. The complete
 history, instructions, tools, results and compaction handoff remain exclusively
 in the canonical request sent to the executing model. A short context-dependent
 ask such as "continue" also gets one bounded active-task summary: the goal
-envelope when present, otherwise the preceding meaningful user ask.
+envelope when present, otherwise the preceding meaningful user ask; a short
+confirmation also gets the last assistant proposal.
 Live data (4 516 calls): 1 291 (29%) had sent Jev nothing but a
 `<codex_internal_context source="goal">` block (~6.4k chars, p50) and 23 more
 only a `<recommended_plugins>` catalog — the head-clip stopped inside the
@@ -46,7 +47,9 @@ Fail-open: any Jev error → astra @medium. Kill switch: file
 Shadow: file ~/.codex/codex-router/jev-router.shadow → decide and log the
 route, but serve plain astra (quality-neutral data collection).
 Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
-(jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
+(jev-router-debug.jsonl) and transport counters (jev-router-debug-stream.log).
+All POSTs require the parent's protected Jev provider credential. Diagnostic
+logs are owner-only, bounded and contain no new prompt or generated-text excerpts.
 Display: streamed reasoning summaries get the routed tag appended in place
 ( · 🧠sol:low · ) so the Codex thread shows the picked model per call.
 The same rewriter keeps one response id across a relayed stream: a tandem stream
@@ -62,13 +65,12 @@ Log: ~/.codex/codex-router/jev-router-live.jsonl
 Codex-dry tandem: when native usage is exhausted — a manual flag file
 (~/.codex/codex-router/jev-router.codex-dry) or an observed quota failure
 (429 / usage-limit body) — the native model ladder is replaced until the window resets:
-frontier-tier (astra) calls go to GLM (opencode-go/glm-5.3-flash), every
-other tier to deepseek (opencode-go/deepseek-v4.1-flash). A quota failure
+all tiers default to deepseek/deepseek-v4.1-flash; environment settings can
+select distinct standard/frontier targets. A quota failure
 flips the state and retries the same call on the tandem; a successful native
 call clears an auto state (never the manual flag). A tandem call that comes
-back retryable (429/5xx) is tried once on the sibling model, because the two Go
-models are metered separately and a spent allowance is reported the same way a
-transient outage is. The decided depth travels with the call, mapped onto the Go
+back retryable (429/5xx) is tried once on a distinct configured sibling only,
+before sending any error to the client. The decided depth travels with the call, mapped onto the Go
 ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
 """
@@ -82,6 +84,7 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from local_runtime import LocalServer, append_private, authorized, local_secret, protect_logs
 
 from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL, TERRA,
                             TIERS, decision_from_answers, route)
@@ -102,7 +105,7 @@ LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.3"
+VERSION = "1.4"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -117,11 +120,13 @@ ASK_MAX_STATE_CHARS = 120_000
 ASK_MAX_QUESTIONS = 40
 ASK_TIMEOUT = 15.0
 ASK_TYPES = ("noul", "choice", "score")
+RESPONSE_MAX_BYTES = 64 * 1024 * 1024
+READ_TIMEOUT = 15
 
 # Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
-GO_STANDARD = "deepseek/deepseek-v4.1-flash"
-GO_FRONTIER = "deepseek/deepseek-v4.1-flash"
-GO_TANDEM = (GO_STANDARD, GO_FRONTIER)
+GO_STANDARD = os.environ.get("JEV_FALLBACK_STANDARD", "deepseek/deepseek-v4.1-flash")
+GO_FRONTIER = os.environ.get("JEV_FALLBACK_FRONTIER", GO_STANDARD)
+GO_TANDEM = tuple(dict.fromkeys((GO_STANDARD, GO_FRONTIER)))
 # The tandem's own thinking ladder. Both Go models declare low/high/max where the
 # native native model ladder exposes low/medium/high/xhigh/max, so a depth keeps its meaning
 # by landing on the middle rung instead of collapsing onto the floor: Jev says
@@ -170,14 +175,6 @@ TASK_HEAD_CHARS = 250
 TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
 TASK_CLIP_MARK = "\n[...]\n"
 CONTEXT_TASK_CHARS = 320
-CONTEXT_DEPENDENT_RX = re.compile(
-    r"(?ix)^\s*(?:(?:ok(?:ay)?|alors|bon|so|then)[,;:!?\s]+)?"
-    r"(?:continue|continuer|poursuis|poursuivez|reprends|reprenez|resume|"
-    r"proceed|go|vas[- ]?y|do\s+it|keep\s+going)\b"
-)
-DEICTIC_RX = re.compile(
-    r"(?i)\b(?:ça|cela|ceci|là|précédemment|au-dessus|that|this|it|above|previously)\b"
-)
 
 # Codex wraps every turn in machine-generated blocks (goal context, plugin
 # catalog, environment, skills, mode notices). They are the longest part of a
@@ -204,9 +201,6 @@ GOAL_BODY_RX = re.compile(
 # A single envelope has been seen at 950k chars. Past this size only the two ends
 # are scanned, which is where the user's text sits anyway.
 ENVELOPE_SCAN_CHARS = 200_000
-
-_log_lock = threading.Lock()
-
 
 def load_key():
     """TYPESAFE_API_KEY: env files win (the process environment can be stale)."""
@@ -337,7 +331,7 @@ def tandem_effort(effort, native_model=None):
 
 def other_tandem(target):
     """The sibling Go model, for one bounded fallback attempt."""
-    return GO_FRONTIER if target == GO_STANDARD else GO_STANDARD
+    return next((model for model in GO_TANDEM if model != target), None)
 
 
 def dry_target(native_model, effort):
@@ -428,6 +422,8 @@ def strip_envelopes(text):
     empty task would push the call onto the caller's fail-open path. A catalog-
     or environment-only turn holds no request at all, so it keeps nothing.
     """
+    if text.startswith("# AGENTS.md instructions for ") and "</INSTRUCTIONS>" in text:
+        text = text.split("</INSTRUCTIONS>", 1)[1]
     if len(text) <= ENVELOPE_SCAN_CHARS:
         scanned = text
     else:
@@ -457,10 +453,8 @@ def task_for_jev(text):
 
 
 def context_dependent(task):
-    """Whether a short ask needs one earlier task summary to be intelligible."""
-    if not task or len(task) > 120:
-        return False
-    return bool(CONTEXT_DEPENDENT_RX.search(task) or DEICTIC_RX.search(task))
+    """Give short asks bounded context; don't guess intent from keyword lists."""
+    return bool(task) and len(task) <= 120
 
 
 def goal_for_jev(text):
@@ -496,6 +490,8 @@ def extract(payload):
             role = item.get("role")
             if role == "user":
                 text = _content_text(item.get("content"))
+                if not task_for_jev(text):
+                    continue
                 if not last_user:
                     last_user = text
                 elif not prior_task:
@@ -567,6 +563,37 @@ def classify(payload):
                             and item.get("type") in ("function_call", "custom_tool_call")):
                         detail["tool_call"] = {"name": str(item.get("name") or "")[:160]}
                         break
+            # Preserve a bounded view of the entire contiguous tool-result batch.
+            # Error counts cover all results, excerpts only the first 3 errors or
+            # (when clean) the last 3 results. Arguments never enter the dossier.
+            batch = []
+            for item in reversed(inp):
+                if not isinstance(item, dict) or item.get("type") not in (
+                    "function_call_output", "custom_tool_call_output"
+                ):
+                    break
+                batch.append(item)
+            if len(batch) > 1:
+                batch.reverse()
+                calls = {item.get("call_id"): str(item.get("name") or "")[:80]
+                         for item in inp if isinstance(item, dict)
+                         and item.get("type") in ("function_call", "custom_tool_call")}
+                rows, errors = [], []
+                for item in batch:
+                    text = _output_text(item.get("output")).strip()
+                    error = ERROR_RX.search(text[-4000:])
+                    excerpt = (text[-4000:][max(0, error.start() - 30):][:120]
+                               if error else text[-120:])
+                    row = {"tool": calls.get(item.get("call_id"), ""),
+                           "error": bool(error), "result": excerpt}
+                    rows.append(row)
+                    if error:
+                        errors.append(row)
+                detail["tool_batch"] = {
+                    "count": len(batch), "errors": len(errors),
+                    "results": errors[:3] if errors else rows[-3:],
+                }
+                detail["errored"] = bool(errors)
         elif last.get("role") == "user":
             detail["step_type"] = "user_turn"
     return detail
@@ -581,12 +608,24 @@ def jev_state(task, prev_assistant, signals, step):
         state["image"] = True
     if step["step_type"] != "user_turn" and prev_assistant:
         state["intent_tail"] = prev_assistant[-INTENT_CHARS:]
+    elif context_dependent(task) and prev_assistant:
+        state["previous_proposal"] = prev_assistant[-INTENT_CHARS:]
     if step["step_type"] == "tool_step":
-        if step["digest"]:
+        if step.get("tool_batch"):
+            state["tool_batch"] = step["tool_batch"]
+        elif step["digest"]:
             state["tool_result_tail"] = step["digest"]
+        if step.get("errored"):
+            state["tool_error"] = True
         if step.get("tool_call", {}).get("name"):
             state["tool"] = step["tool_call"]["name"]
     return state
+
+
+def decision_dossier(payload):
+    """Shared projection for live traffic, replay and calibration."""
+    task, previous, signals = extract(payload)
+    return jev_state(task, previous, signals, classify(payload))
 
 
 def _debug_shape(payload):
@@ -610,7 +649,7 @@ def _debug_shape(payload):
         "store": payload.get("store"),
         "tool_choice": payload.get("tool_choice"),
         "parallel_tool_calls": payload.get("parallel_tool_calls"),
-        "instructions_head": (payload.get("instructions") or "")[:200],
+        "instructions_chars": len(payload.get("instructions") or ""),
         "n_input": len(items),
         "tail": tail,
         "tools": names,
@@ -665,6 +704,17 @@ def answer_signature(shown):
     short, glyph = route_label(shown.get("model"))
     effort = shown.get("effort") or "non spécifié"
     return f"**{glyph} {short} · thinking: {effort}**\n\n"
+
+
+def presentation_signature(payload, shown):
+    """Never prefix data constrained by a JSON response format."""
+    text = payload.get("text")
+    fmt = text.get("format") if isinstance(text, dict) else None
+    legacy = payload.get("response_format")
+    if any(isinstance(value, dict) and value.get("type") not in (None, "text")
+           for value in (fmt, legacy)):
+        return None
+    return answer_signature(shown)
 
 
 # Only our exact presentation forms, at the boundaries of assistant text.
@@ -956,6 +1006,7 @@ class SummaryMarker:
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
         if dtype in TERMINAL_EVENT_TYPES:
+            self._flush_held(out)
             response = data.get("response")
             self.terminal_type = dtype
             self.usage = usage_counts(response.get("usage")) if isinstance(response, dict) else None
@@ -1020,9 +1071,9 @@ def assemble_sse(raw):
         etype = event.get("type") if isinstance(event, dict) else None
         if etype == "response.output_item.done" and isinstance(event.get("item"), dict):
             items[event.get("output_index") or 0] = event["item"]
-        elif etype == "response.completed":
+        elif etype in TERMINAL_EVENT_TYPES:
             final = event.get("response")
-        elif isinstance(etype, str) and etype in ("response.failed", "error"):
+        elif etype == "error":
             error = event
     if final is not None:
         if not final.get("output") and items:
@@ -1035,16 +1086,66 @@ def assemble_sse(raw):
 
 def log_line(record):
     try:
-        with _log_lock:
-            with open(LOG_PATH, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_private(LOG_PATH, json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "jev-router/1.2"
+    server_version = "jev-router/1.4"
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(READ_TIMEOUT)
+        self._response_started = False
+
+    def send_response(self, code, message=None):
+        self._response_started = True
+        super().send_response(code, message)
+
+    def _body(self, limit):
+        """Validate framing and read a bounded JSON object within a deadline."""
+        lengths = self.headers.get_all("Content-Length", [])
+        if self.headers.get("Transfer-Encoding") or len(lengths) != 1:
+            self._json(400, {"error": {"message": "one Content-Length required"}})
+            return None
+        try:
+            length = int(lengths[0])
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self._json(400, {"error": {"message": "invalid Content-Length"}})
+            return None
+        if length > limit:
+            self._json(413, {"error": {"message": "body too large"}})
+            return None
+        if self.headers.get_content_type() != "application/json":
+            self._json(415, {"error": {"message": "application/json required"}})
+            return None
+        deadline = time.monotonic() + READ_TIMEOUT
+        pieces, remaining = [], length
+        while remaining:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("request body deadline")
+            self.connection.settimeout(left)
+            chunk = self.rfile.read1(min(65536, remaining))
+            if not chunk:
+                self._json(400, {"error": {"message": "incomplete request body"}})
+                return None
+            pieces.append(chunk)
+            remaining -= len(chunk)
+        self.connection.settimeout(READ_TIMEOUT)
+        try:
+            body = json.loads(b"".join(pieces))
+        except (ValueError, UnicodeError):
+            self._json(400, {"error": {"message": "invalid json"}})
+            return None
+        if not isinstance(body, dict):
+            self._json(400, {"error": {"message": "json object expected"}})
+            return None
+        return body
 
     def log_message(self, *args):
         pass
@@ -1063,17 +1164,9 @@ class Handler(BaseHTTPRequestHandler):
         No policy, no logging of the caller's state: the body is validated,
         forwarded as-is and only the typed answers come back.
         """
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > ASK_MAX_BYTES:
-            # Do not drain an oversized body: answer and close so a wrong or
-            # hostile Content-Length cannot make the server buffer it.
-            self.close_connection = True
-            return self._json(413, {"error": {"message": f"body too large ({length} bytes)"}})
-        raw = self.rfile.read(length) if length else b""
-        try:
-            body = json.loads(raw.decode("utf-8"))
-        except ValueError:
-            return self._json(400, {"error": {"message": "invalid json"}})
+        body = self._body(ASK_MAX_BYTES)
+        if body is None:
+            return
         state, questions, error = validate_ask(body)
         if error:
             return self._json(400, {"error": {"message": error}})
@@ -1083,8 +1176,8 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.time()
         try:
             answer = call_jev_routed(key, state, questions, timeout=ASK_TIMEOUT)
-        except Exception as exc:
-            return self._json(502, {"error": {"message": f"jev: {exc}"[:300]}})
+        except Exception:
+            return self._json(502, {"error": {"message": "Jev provider unavailable"}})
         return self._json(200, {
             "model": answer.get("model"),
             "answers": answer.get("answers") or {},
@@ -1107,18 +1200,30 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path in ("/health", ""):
             self._json(200, {"ok": True, "service": "jev-router", "version": VERSION,
-                             "policy_version": POLICY_VERSION})
+                             "policy_version": POLICY_VERSION,
+                             "auth_configured": bool(local_secret())})
         else:
             self._json(404, {"error": {"message": "not found"}})
 
     def do_POST(self):
+        self.close_connection = True
+        self._response_started = False
         try:
+            secret = local_secret()
+            if not secret:
+                return self._json(503, {"error": {"message": "local credential not configured"}})
+            if not authorized(self.headers.get("Authorization"), secret):
+                return self._json(401, {"error": {"message": "Unauthorized"}})
+            # Browsers are not clients of this local server.
+            if self.headers.get("Origin"):
+                return self._json(403, {"error": {"message": "browser origin not supported"}})
             self._post()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as exc:  # fail-open at the response level only
+        except Exception:
             try:
-                self._json(502, {"error": {"message": f"jev-router: {exc}"}})
+                if not self._response_started:
+                    self._json(502, {"error": {"message": "local router request failed"}})
             except Exception:
                 pass
 
@@ -1126,17 +1231,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.rstrip("/") in ASK_PATHS:
             return self._ask()
-        if "/responses" not in path:
-            return self._json(404, {"error": {"message": f"unsupported path {path}"}})
-
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except ValueError:
-            return self._json(400, {"error": {"message": "invalid json"}})
-        if not isinstance(payload, dict):
-            return self._json(400, {"error": {"message": "json object expected"}})
+        if path.rstrip("/") not in ("/responses", "/v1/responses"):
+            return self._json(404, {"error": {"message": "unsupported path"}})
+        payload = self._body(RESPONSE_MAX_BYTES)
+        if payload is None:
+            return
         # Our own answer signatures never travel back upstream (see
         # strip_signatures): the model must not read its own route tag.
         stripped = strip_signatures(payload)
@@ -1145,10 +1244,9 @@ class Handler(BaseHTTPRequestHandler):
         debug = os.path.exists(DEBUG_PATH)
         if debug:
             try:
-                with open(os.path.join(STATE, "jev-router-debug.jsonl"), "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(
-                        {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "shape": _debug_shape(payload)},
-                        ensure_ascii=False) + "\n")
+                append_private(os.path.join(STATE, "jev-router-debug.jsonl"), json.dumps(
+                    {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "shape": _debug_shape(payload)},
+                    ensure_ascii=False) + "\n")
             except OSError:
                 pass
         task, prev_assistant, signals = extract(payload)
@@ -1205,7 +1303,7 @@ class Handler(BaseHTTPRequestHandler):
         # operational fallbacks, rather than a hypothetical classification.
         shown = {"model": model, "effort": effort or (payload.get("reasoning") or {}).get("effort")}
         marker = route_marker(shown["model"], shown["effort"])
-        signature = answer_signature(shown)
+        signature = presentation_signature(payload, shown)
 
         def apply_route(payload, model, effort):
             payload["model"] = model
@@ -1222,7 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
 
         apply_route(payload, model, effort)
 
-        out_path = path if path.startswith("/v1") else "/v1" + path
+        out_path = "/v1/responses"
         self._attempts = []
         status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
             payload, out_path, stream_requested, debug, marker, model, signature)
@@ -1243,14 +1341,15 @@ class Handler(BaseHTTPRequestHandler):
             dry_reason = "quota"
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
-            signature = answer_signature({"model": model, "effort": effort})
+            signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
                 payload, out_path, stream_requested, debug, marker, model, signature)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
             dry_reason = "cleared"
-        if model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS:
+        if (model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS
+                and unwritten is not None and other_tandem(model)):
             # Half of the tandem refused this call, so try the sibling model
             # before the turn is lost. The two Go models are metered against
             # separate allowances, and a spent allowance arrives as the same
@@ -1261,7 +1360,7 @@ class Handler(BaseHTTPRequestHandler):
             apply_route(payload, model, effort)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
-            signature = answer_signature({"model": model, "effort": effort})
+            signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
                 payload, out_path, stream_requested, debug, marker, model, signature)
         if unwritten is not None:
@@ -1312,7 +1411,7 @@ class Handler(BaseHTTPRequestHandler):
             "digest_len": len(step["digest"]),
             "stripped": stripped,
             "would": would,
-            "task": task[:110],
+            "task_chars": len(task),
         })
 
     def _forward(self, payload, out_path, stream_requested, debug, marker, model, signature=None):
@@ -1351,18 +1450,12 @@ class Handler(BaseHTTPRequestHandler):
             # streaming request, a 200 response IS an SSE stream: force the
             # outgoing header, because the forwarder picks its parser from it
             # (text/event-stream → SSE relay, application/json → JSON parse).
-            is_sse = ("text/event-stream" in ctype) or (status == 200 and stream_requested)
+            is_sse = status == 200 and (
+                "text/event-stream" in ctype or (not ctype and stream_requested))
             out_kind = ""
 
             if is_sse and stream_requested:
                 out_kind = "sse"
-                cap = None
-                if debug:
-                    try:
-                        cap = open(os.path.join(STATE, "jev-router-debug-stream.log"), "a", encoding="utf-8")
-                        cap.write(f"\n===== {time.strftime('%H:%M:%S')} model={model} =====\n")
-                    except OSError:
-                        cap = None
                 self.send_response(status)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Transfer-Encoding", "chunked")
@@ -1372,12 +1465,14 @@ class Handler(BaseHTTPRequestHandler):
                     chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
                     if not chunk:
                         break
-                    if cap is not None:
+                    if debug:
                         try:
-                            cap.write(chunk.decode("utf-8", "replace"))
-                            cap.flush()
+                            # Capture only transport counters, never generated text,
+                            # tool arguments or raw streams which may contain secrets.
+                            append_private(os.path.join(STATE, "jev-router-debug-stream.log"),
+                                           json.dumps({"model": model, "bytes": len(chunk)}) + "\n")
                         except OSError:
-                            cap = None
+                            pass
                     piece = markerer.feed(chunk).encode("utf-8")
                     if piece:
                         self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
@@ -1386,25 +1481,30 @@ class Handler(BaseHTTPRequestHandler):
                 if piece:
                     self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
                     self.wfile.flush()
+                if not markerer.terminal_type:
+                    piece = b'data: {"type":"error","error":{"message":"upstream stream ended before a terminal event"}}\n\n'
+                    self.wfile.write(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
-                if cap is not None:
-                    cap.close()
             else:
                 out_kind = "json"
                 data = resp.read()
                 out_ctype = ctype or "application/json"
                 head = data[:64].lstrip()
-                if status >= 400 and (status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace"))):
+                if status >= 400:
                     # Held back, not written: the caller decides whether another
                     # model gets this call first. The refusal also carries the
                     # instant the window reopens, which is how long the flip lasts.
-                    return status, out_kind, ctype, True, data, quota_reset_at(resp.headers, data)
+                    quota = bool(status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace")))
+                    return status, out_kind, ctype, quota, data, quota_reset_at(resp.headers, data)
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
                 # non-stream provider path) instead of forwarding raw SSE bytes.
                 if status == 200 and (head.startswith(b"event:") or head.startswith(b"data:")):
                     assembled = assemble_sse(data)
+                    if assembled is None:
+                        status = 502
+                        assembled = {"error": {"message": "upstream stream ended before a terminal event"}}
                     if assembled is not None:
                         attempt["usage"] = usage_counts(assembled.get("usage"))
                         response_status = assembled.get("status")
@@ -1421,6 +1521,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             return status, out_kind, ctype, False, None, None
+        except (OSError, http.client.HTTPException):
+            if self._response_started:
+                raise
+            status = 502
+            data = b'{"error":{"message":"upstream transport unavailable"}}'
+            return status, "json", "application/json", False, data, None
         finally:
             attempt["status"] = status
             if markerer is not None:
@@ -1430,12 +1536,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(LISTEN, Handler)
-    server.daemon_threads = True
-    try:
-        os.chmod(LOG_PATH, 0o600)
-    except OSError:
-        pass
+    server = LocalServer(LISTEN, Handler)
+    protect_logs([LOG_PATH, os.path.join(STATE, "jev-router-debug.jsonl"),
+                  os.path.join(STATE, "jev-router-debug-stream.log")])
     print(f"[jev-router] ready on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()
 

@@ -59,6 +59,8 @@ import json
 import os
 import statistics
 import sys
+from contextlib import ExitStack
+from itertools import chain
 
 LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
 BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
@@ -168,7 +170,7 @@ def prompt_cache_usage(entries):
         switched = revisited = False
         if isinstance(scope, str) and scope:
             scopes.add(scope)
-            if selected in CREDIT_RATES:
+            if selected in NATIVE_TIERS:
                 previous = last_model.get(scope)
                 seen = seen_models.setdefault(scope, set())
                 if previous is not None and selected != previous:
@@ -189,7 +191,7 @@ def prompt_cache_usage(entries):
             continue
         for attempt in attempts:
             model = attempt.get("model")
-            if model not in CREDIT_RATES:
+            if model not in NATIVE_TIERS:
                 continue
             row = rows.setdefault(model, {
                 "observed_attempts": 0, "unknown_attempts": 0, "hit_attempts": 0,
@@ -362,12 +364,16 @@ def load_entries(path, days, now=None):
     now = now or datetime.datetime.now()
     cut = now - datetime.timedelta(days=days)
     entries, stats = [], {"lines": 0, "unparsable": 0, "undated": 0, "out_of_window": 0}
-    try:
-        handle = open(path, encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise SystemExit(f"cannot read the live log {path}: {exc}")
-    with handle as fh:
-        for line in fh:
+    with ExitStack() as stack:
+        handles = []
+        for candidate in (str(path) + ".1", path):
+            try:
+                handles.append(stack.enter_context(open(candidate, encoding="utf-8", errors="replace")))
+            except FileNotFoundError:
+                continue
+        if not handles:
+            raise SystemExit(f"cannot read the live log {path}")
+        for line in chain.from_iterable(handles):
             line = line.strip()
             if not line:
                 continue
@@ -375,6 +381,9 @@ def load_entries(path, days, now=None):
             try:
                 entry = json.loads(line)
             except ValueError:
+                stats["unparsable"] += 1
+                continue
+            if not isinstance(entry, dict):
                 stats["unparsable"] += 1
                 continue
             at = parse_at(entry.get("at"))

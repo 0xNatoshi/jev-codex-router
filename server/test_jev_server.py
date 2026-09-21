@@ -172,8 +172,10 @@ class DryTandem(unittest.TestCase):
             self.assertEqual(jev.tandem_effort(once, jev.SOL), once)
 
     def test_the_fallback_is_the_sibling_model(self):
-        self.assertEqual(jev.other_tandem(jev.GO_STANDARD), jev.GO_FRONTIER)
-        self.assertEqual(jev.other_tandem(jev.GO_FRONTIER), jev.GO_STANDARD)
+        with mock.patch.object(jev, "GO_TANDEM", ("fixture/a", "fixture/b")):
+            self.assertEqual(jev.other_tandem("fixture/a"), "fixture/b")
+        with mock.patch.object(jev, "GO_TANDEM", ("fixture/a",)):
+            self.assertIsNone(jev.other_tandem("fixture/a"))
 
 
 class TandemRetry(unittest.TestCase):
@@ -274,14 +276,16 @@ class JevTaskInput(unittest.TestCase):
                      "content": [{"type": "output_text", "text": "Reponse"}]}
         short = self.state([assistant, self.user_item(self.ASK)])
         long_thread = self.state(history + [assistant, self.user_item(self.ASK)])
-        self.assertEqual(short, long_thread)
+        self.assertNotIn("n_items", long_thread)
+        self.assertEqual(short["task"], long_thread["task"])
+        self.assertLessEqual(len(json.dumps(long_thread)), 1100)
 
     def test_a_user_turn_contains_no_empty_or_historical_fields(self):
         assistant = {"type": "message", "role": "assistant",
                      "content": [{"type": "output_text", "text": "Old answer"}]}
         self.assertEqual(
             self.state([assistant, self.user_item(self.ASK)]),
-            {"task": self.ASK, "step": "user_turn"},
+            {"task": self.ASK, "step": "user_turn", "previous_proposal": "Old answer"},
         )
 
     def test_a_context_dependent_ask_gets_one_bounded_preceding_task(self):
@@ -297,12 +301,12 @@ class JevTaskInput(unittest.TestCase):
         )
         self.assertLessEqual(len(state["active_task"]), jev.CONTEXT_TASK_CHARS)
 
-    def test_an_independent_short_ask_does_not_pay_for_history(self):
+    def test_short_asks_pay_only_for_bounded_context_without_guessing_intent(self):
         state = self.state([
             self.user_item("Refactor the entire authentication service."),
             self.user_item("List three files."),
         ])
-        self.assertNotIn("active_task", state)
+        self.assertLessEqual(len(state["active_task"]), jev.CONTEXT_TASK_CHARS)
 
     def test_a_goal_summary_wins_for_continue_without_sending_the_envelope(self):
         goal = (
