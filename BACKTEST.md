@@ -4,9 +4,10 @@
 real Codex turns (list-price equivalent; protocol and limitations below).
 
 The tables below describe the September 17 policy (Luna max + Fast, confidence
-fallback to Sol), not `joint-v1-standard` introduced September 20. The current
-policy uses a joint model/effort judgment, standard speed, and no confidence
-fallback. Its quota savings and task quality still need outcome measurements.
+fallback to Sol), not the later routing contracts. The current policy uses
+independent explicit model and effort judgments in one request, standard speed,
+and no confidence fallback. Its quota savings and task quality still need
+outcome measurements.
 
 This document specifies exactly how the savings claim is measured, and publishes
 the aggregate results. The replay is fully local: real turns and their own token
@@ -89,7 +90,7 @@ python3 poc/backtest_savings.py --days 7          # classify current policy + re
 python3 poc/backtest_savings.py --days 7 --from-cache   # re-price only
 ```
 
-The current script uses the live joint-decision contract, so these commands do
+The current script uses the live split-decision contract, so these commands do
 not reproduce the historical table above. A cache from an older policy is
 rejected. The pre-change implementation is available in commit `bebb601`.
 

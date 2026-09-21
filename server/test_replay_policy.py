@@ -33,6 +33,7 @@ class ReplayPolicy(unittest.TestCase):
         (folder / f"{name}.jsonl").write_text("\n".join(json.dumps(r) for r in records))
 
     def test_joint_decision_and_equal_baseline_population(self):
+        pair = routing_policy.route_choice(routing_policy.LUNA, "low")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.write_session(root, "supported", routing_policy.SOL, 1_000_000)
@@ -42,8 +43,8 @@ class ReplayPolicy(unittest.TestCase):
                  mock.patch.object(backtest, "RESULT_PATH", str(result)), \
                  mock.patch.object(backtest.poc, "load_key", return_value="fixture"), \
                  mock.patch.object(backtest.poc, "post_json", return_value={"answers": {
-                     "route": {"choice": routing_policy.route_choice(
-                         routing_policy.LUNA, "low"), "confidence": 0.1},
+                     "model": {"choice": pair["model"], "confidence": 0.1},
+                     "effort": {"choice": pair["effort"], "confidence": 0.1},
                  }}) as judge, \
                  mock.patch("sys.argv", ["backtest"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(backtest.main(), 0)

@@ -34,9 +34,13 @@ COMPLETED = (
 
 
 def answer(tier, depth):
+    pair = route_choice(tier, depth)
     return {
         "model": "jev-test",
-        "answers": {"route": {"choice": route_choice(tier, depth), "confidence": 0.3}},
+        "answers": {
+            "model": {"choice": pair["model"], "confidence": 0.3},
+            "effort": {"choice": pair["effort"], "confidence": 0.3},
+        },
         "usage": {"input_tokens": 100, "output_tokens": 5},
     }
 
@@ -205,9 +209,12 @@ class PerCallEndToEnd(unittest.TestCase):
         self.assertEqual(forwarded["instructions"], sent["instructions"])
         self.assertEqual(forwarded["tools"], sent["tools"])
         self.assertEqual(decision_state["task"], "Continue from the existing evidence.")
-        self.assertNotIn("original tweet", json.dumps(decision_state))
+        self.assertEqual(
+            decision_state["active_task"],
+            "[Earlier history was compacted: keep the tweet and XMESH evidence.]",
+        )
         self.assertNotIn("XMESH historical action", json.dumps(decision_state))
-        for key in ("task", "step", "intent_tail", "tool", "tool_result_tail"):
+        for key in ("task", "active_task", "step", "intent_tail", "tool", "tool_result_tail"):
             self.assertNotIn(key, forwarded)
 
     def test_prompt_cache_key_survives_model_swaps_unchanged(self):

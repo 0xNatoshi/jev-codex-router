@@ -207,11 +207,13 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `joint-v2-per-call-compact`: Jev chooses one of 15
-  model/effort pairs for every model call, including tool continuations and
+- The current policy is `split-v3-explicit`: one System One request asks two
+  independent Choice questions with explicit criteria — capability tier and
+  reasoning effort — for every model call, including tool continuations and
   post-compaction calls. Provider retries inside one call keep that decision.
   The selected model always receives the complete canonical request and the
   original `prompt_cache_key`; Jev receives only the bounded decision dossier.
+  A context-dependent short ask also gets one bounded active-task summary.
   Cache reuse is measured per `(hashed session, model)`, never assumed across
   models. All tiers use adaptive effort and standard speed; never force Luna to
   max or enable Fast mode.

@@ -284,6 +284,43 @@ class JevTaskInput(unittest.TestCase):
             {"task": self.ASK, "step": "user_turn"},
         )
 
+    def test_a_context_dependent_ask_gets_one_bounded_preceding_task(self):
+        state = self.state([
+            self.user_item("Analyse le routeur, corrige son cache puis valide les tests."),
+            self.user_item(self.PLUGINS),
+            self.user_item("Alors go ?"),
+        ])
+        self.assertEqual(state["task"], "Alors go ?")
+        self.assertEqual(
+            state["active_task"],
+            "Analyse le routeur, corrige son cache puis valide les tests.",
+        )
+        self.assertLessEqual(len(state["active_task"]), jev.CONTEXT_TASK_CHARS)
+
+    def test_an_independent_short_ask_does_not_pay_for_history(self):
+        state = self.state([
+            self.user_item("Refactor the entire authentication service."),
+            self.user_item("List three files."),
+        ])
+        self.assertNotIn("active_task", state)
+
+    def test_a_goal_summary_wins_for_continue_without_sending_the_envelope(self):
+        goal = (
+            '<codex_internal_context source="goal">'
+            "Implement and verify the cache-safe model router."
+            "</codex_internal_context>"
+        )
+        state = self.state([
+            self.user_item("An older unrelated request."),
+            self.user_item(goal + "\ncontinue"),
+        ])
+        self.assertEqual(state["task"], "continue")
+        self.assertEqual(
+            state["active_task"],
+            "Implement and verify the cache-safe model router.",
+        )
+        self.assertNotIn("codex_internal_context", json.dumps(state))
+
     def test_only_the_last_tool_output_travels_and_only_as_a_digest(self):
         output = {"type": "function_call_output", "output": "ok\n" + ("ligne\n" * 5_000)}
         state = self.state([self.user_item(self.ASK), output])

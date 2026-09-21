@@ -7,7 +7,8 @@ and a thinking depth, applies the routing policy, then relays to the Codex
 Router's local caller edge (native session sharing enabled) — with no format
 conversion: Responses in, Responses out, SSE relayed verbatim.
 
-Routing policy: Jev chooses one (model, thinking effort) pair for every call.
+Routing policy: Jev independently chooses one capability tier and one thinking
+depth for every call, in a single typed request. Code combines those two answers.
 Every pair uses standard speed. Confidence is logged without changing the chosen
 model. There are no keyword/scenario overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
@@ -20,13 +21,15 @@ request untouched, never that projection. The caller's prompt_cache_key also
 passes through untouched, allowing each selected model to reuse its own cache
 for this session; caches are not assumed to be shared across different models.
 
-Input handling (v4): Jev sees the current ask, never the thread — the task is
+Input handling (v5): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
 (goal context, plugin catalog, environment, skills) and clipped head+tail.
 Thread length never reaches the judge. A tool continuation adds only its tool
 name, a short output tail and a short assistant-intent tail. The complete
 history, instructions, tools, results and compaction handoff remain exclusively
-in the canonical request sent to the executing model.
+in the canonical request sent to the executing model. A short context-dependent
+ask such as "continue" also gets one bounded active-task summary: the goal
+envelope when present, otherwise the preceding meaningful user ask.
 Live data (4 516 calls): 1 291 (29%) had sent Jev nothing but a
 `<codex_internal_context source="goal">` block (~6.4k chars, p50) and 23 more
 only a `<recommended_plugins>` catalog — the head-clip stopped inside the
@@ -160,6 +163,15 @@ TASK_CHARS = 400
 TASK_HEAD_CHARS = 250
 TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
 TASK_CLIP_MARK = "\n[...]\n"
+CONTEXT_TASK_CHARS = 320
+CONTEXT_DEPENDENT_RX = re.compile(
+    r"(?ix)^\s*(?:(?:ok(?:ay)?|alors|bon|so|then)[,;:!?\s]+)?"
+    r"(?:continue|continuer|poursuis|poursuivez|reprends|reprenez|resume|"
+    r"proceed|go|vas[- ]?y|do\s+it|keep\s+going)\b"
+)
+DEICTIC_RX = re.compile(
+    r"(?i)\b(?:ça|cela|ceci|là|précédemment|au-dessus|that|this|it|above|previously)\b"
+)
 
 # Codex wraps every turn in machine-generated blocks (goal context, plugin
 # catalog, environment, skills, mode notices). They are the longest part of a
@@ -179,7 +191,10 @@ ENVELOPE_RX = re.compile(
 # work objective ("Continue working toward the active thread goal. / The
 # objective below is ..."), so it is what an envelope-only turn falls back to.
 GOAL_BODY_RX = re.compile(
-    r'<codex_internal_context(?:\s[^<>]*)?>(.*?)</codex_internal_context\s*>', re.S)
+    r'<codex_internal_context(?=[^<>]*\bsource=["\']goal["\'])'
+    r'(?:\s[^<>]*)?>(.*?)</codex_internal_context\s*>',
+    re.S,
+)
 # A single envelope has been seen at 950k chars. Past this size only the two ends
 # are scanned, which is where the user's text sits anyway.
 ENVELOPE_SCAN_CHARS = 200_000
@@ -435,10 +450,24 @@ def task_for_jev(text):
     return clip_task(strip_envelopes(text))
 
 
+def context_dependent(task):
+    """Whether a short ask needs one earlier task summary to be intelligible."""
+    if not task or len(task) > 120:
+        return False
+    return bool(CONTEXT_DEPENDENT_RX.search(task) or DEICTIC_RX.search(task))
+
+
+def goal_for_jev(text):
+    """Bounded active objective from Codex's goal envelope, when it exists."""
+    match = GOAL_BODY_RX.search(text[:ENVELOPE_SCAN_CHARS])
+    return clip_task(match.group(1))[:CONTEXT_TASK_CHARS] if match else ""
+
+
 def extract(payload):
-    """Last user message (envelope-free, clipped) + last assistant message + small stats."""
+    """Current ask, assistant tail and only the task context needed to judge it."""
     inp = payload.get("input")
     last_user = last_assistant = ""
+    prior_task = ""
     n_items = 0
     has_image = False
     tool_tail = False
@@ -459,17 +488,27 @@ def extract(payload):
             if not isinstance(item, dict):
                 continue
             role = item.get("role")
-            if role == "user" and not last_user:
-                last_user = _content_text(item.get("content"))
+            if role == "user":
+                text = _content_text(item.get("content"))
+                if not last_user:
+                    last_user = text
+                elif not prior_task:
+                    prior_task = task_for_jev(text)
             elif role == "assistant" and not last_assistant:
                 last_assistant = _content_text(item.get("content"))
-            if last_user and last_assistant:
+            if last_user and prior_task and last_assistant:
                 break
-    return task_for_jev(last_user), last_assistant.strip(), {
+    task = task_for_jev(last_user)
+    signals = {
         "n_items": n_items,
         "has_image": has_image,
         "tool_history": tool_tail,
     }
+    if context_dependent(task):
+        context_task = goal_for_jev(last_user) or prior_task
+        if context_task:
+            signals["context_task"] = context_task[:CONTEXT_TASK_CHARS]
+    return task, last_assistant.strip(), signals
 
 
 def _output_text(output):
@@ -530,6 +569,8 @@ def classify(payload):
 def jev_state(task, prev_assistant, signals, step):
     """Strictly bounded decision dossier; never reused as execution context."""
     state = {"task": task, "step": step["step_type"]}
+    if signals.get("context_task"):
+        state["active_task"] = signals["context_task"]
     if signals.get("has_image"):
         state["image"] = True
     if step["step_type"] != "user_turn" and prev_assistant:

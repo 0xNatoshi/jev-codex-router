@@ -38,6 +38,14 @@ MISMATCHED = (
 )
 
 
+def jev_answer(tier, depth, confidence):
+    pair = route_choice(tier, depth)
+    return {"answers": {
+        "model": {"choice": pair["model"], "confidence": confidence},
+        "effort": {"choice": pair["effort"], "confidence": confidence},
+    }}
+
+
 class Edge(BaseHTTPRequestHandler):
     """Stands in for the router's local caller edge."""
 
@@ -175,9 +183,7 @@ class TandemHandoff(unittest.TestCase):
                                          (jev.SOL, "high", "priority"),
                                          (jev.ASTRA, "xhigh", "fast")):
             with self.subTest(tier=tier, depth=depth), mock.patch.object(
-                jev, "call_jev_routed", return_value={"answers": {
-                    "route": {"choice": route_choice(tier, depth), "confidence": 0.1},
-                }}
+                jev, "call_jev_routed", return_value=jev_answer(tier, depth, 0.1)
             ):
                 status, body = self.call(service_tier=client_speed,
                                          reasoning={"effort": "max", "summary": "auto"},
@@ -210,9 +216,11 @@ class TandemHandoff(unittest.TestCase):
     def test_compaction_is_judged_instead_of_pinned_to_sol_high(self):
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
-        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": route_choice(jev.ASTRA, "low"), "confidence": 0.2},
-        }}) as judge:
+        with mock.patch.object(
+            jev,
+            "call_jev_routed",
+            return_value=jev_answer(jev.ASTRA, "low", 0.2),
+        ) as judge:
             status, body = self.call(input="You are creating a lossy continuation checkpoint")
         self.assertEqual(status, 200, body)
         judge.assert_called_once()
@@ -287,9 +295,11 @@ class TandemHandoff(unittest.TestCase):
             pass
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
-        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": route_choice(jev.LUNA, "low"), "confidence": 0.9},
-        }}):
+        with mock.patch.object(
+            jev,
+            "call_jev_routed",
+            return_value=jev_answer(jev.LUNA, "low", 0.9),
+        ):
             status, body = self.call(reasoning={"effort": "high"})
         self.assertEqual(status, 200)
         actual = jev.answer_signature({"model": jev.ASTRA, "effort": "high"})

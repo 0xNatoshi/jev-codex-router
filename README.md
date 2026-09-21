@@ -57,17 +57,20 @@ Codex ──▶ Codex Router (:4202)
 
 ## Routing policy
 
-The shared contract in `server/routing_policy.py` gives Jev 15 explicit pairs:
-Luna, Sol or Astra × low, medium, high, xhigh or max thinking. Jev chooses the
-pair in one Choice question, using capability profiles and the current request,
-recent assistant intent, and the available tool result. Every pair uses standard
-speed, overriding an incoming Fast setting, including retries and bypass modes.
+The shared contract in `server/routing_policy.py` gives Jev two independent
+Choice questions in one request: the least expensive sufficient capability tier
+(Luna, Sol or Astra), and the minimum sufficient thinking depth (low through
+max). Explicit criteria are cheaper and more reliable here than 15 terse
+cross-product labels. Code validates and combines the two typed answers. Every
+pair uses standard speed, overriding an incoming Fast setting, including retries
+and bypass modes.
 
 There is no preferred model, target distribution, keyword-to-model rule,
 low-confidence fallback to Sol, mechanical-step exception, or compaction pin.
-A valid decision is applied unchanged even when several pairs are close. Jev's
-confidence and full choice distribution are logged separately; neither is a
-measured probability that the selected model will successfully finish the task.
+A valid pair of decisions is applied unchanged even when options are close.
+Jev's conservative combined confidence and both choice distributions are logged
+separately; neither is a measured probability that the selected model will
+successfully finish the task.
 
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,
@@ -76,6 +79,21 @@ checks and synthetic routing samples establish wiring, not equal-quality savings
 A missing/invalid Jev response or a provider error still uses the separately
 logged technical fail-open route (Astra at medium); the manual kill switch and
 native-quota exhaustion are operational bypasses, not Jev decisions.
+
+This shape follows the useful parts of the surrounding router ecosystem:
+TypeSafe recommends small named state fields containing only relevant evidence
+and warns that irrelevant state reduces accuracy
+([State](https://docs.typesafe.ai/concepts/state),
+[Jev 1.13](https://docs.typesafe.ai/model-jaggedness/jev-1.13)).
+[ReflexRoute](https://github.com/AIGNLAI/ReflexRoute) similarly supplies explicit
+candidate priors plus a few retrieved task examples, while
+[LiteLLM's Jev classifier](https://github.com/BerriAI/litellm/blob/main/litellm/router_strategy/complexity_router/jev_classifier.py)
+uses explicit tier criteria and treats short replies using their conversation
+context. By contrast, [RouteLLM](https://github.com/lm-sys/RouteLLM) is a useful
+benchmarking reference but its published router path is primarily trained and
+calibrated around the current user prompt. The local policy therefore keeps a
+small adaptive task summary instead of either the whole thread or a blind
+last-message-only view.
 
 ### Codex-dry tandem — only while native usage is exhausted
 
@@ -150,7 +168,9 @@ call gets a fresh Jev decision, so the serving model may change between
 sub-actions. Provider retries inside one call retain that call's decision. Jev
 receives only a bounded decision dossier: active task, step type, and—when
 relevant—a short assistant-intent tail, tool name, tool-output tail or image
-flag. The executing model receives the caller's canonical request in full, with
+flag. Short context-dependent asks such as `continue` also receive one bounded
+active-task summary from Codex's goal envelope or the preceding meaningful user
+ask. The executing model receives the caller's canonical request in full, with
 only the selected model, reasoning effort, standard service tier and required
 streaming flag changed.
 
@@ -327,8 +347,9 @@ curl -s http://127.0.0.1:4319/health
 
 ## Status
 
-Early, but running in production on the author's setup. The joint routing policy needs outcome calibration on real usage; the local
-decision and attempt logs provide observations, not quality labels.
+Early, but running in production on the author's setup. The split routing policy
+needs outcome calibration on real usage; the local decision and attempt logs
+provide observations, not quality labels.
 
 ## License
 
