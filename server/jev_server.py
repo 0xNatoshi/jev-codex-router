@@ -1636,7 +1636,11 @@ class Handler(BaseHTTPRequestHandler):
         experiment_config = sol_baseline_config()
         experiment = None
         shadow_enabled = os.path.exists(SHADOW_PATH)
-        if decision and experiment_config and not shadow_enabled:
+        experiment_scope = (
+            isinstance(payload.get("prompt_cache_key"), str)
+            and bool(payload["prompt_cache_key"].strip())
+        )
+        if decision and experiment_config and experiment_scope and not shadow_enabled:
             if sol_baseline_member(scope, experiment_config):
                 experiment = "all_sol"
                 if gate != "astra_policy" and model in TIERS:

@@ -167,7 +167,11 @@ def prompt_cache_usage(entries):
     revisit_input = revisit_cached = 0
 
     for entry in entries:
-        scope = entry.get("cache_scope")
+        scope = (
+            entry.get("cache_scope")
+            if entry.get("cache_key_present") is not False
+            else None
+        )
         selected = entry.get("native")
         switched = revisited = False
         if isinstance(scope, str) and scope:

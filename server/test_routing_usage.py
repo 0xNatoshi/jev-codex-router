@@ -138,6 +138,17 @@ class Usage(unittest.TestCase):
         self.assertEqual(experiment["cohorts"]["routed"]["lease_hits"], 1)
         self.assertEqual(experiment["cohorts"]["all_sol"]["turns"], 1)
 
+    def test_explicitly_unscoped_calls_are_not_counted_as_cache_sessions(self):
+        cache = report.prompt_cache_usage([{
+            "cache_scope": "task-fallback", "cache_key_present": False,
+            "native": j.LUNA,
+            "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 100, "cached_input_tokens": 0},
+            }],
+        }])
+        self.assertEqual(cache["tracked_sessions"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

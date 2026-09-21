@@ -334,6 +334,19 @@ class PerCallEndToEnd(unittest.TestCase):
         self.assertEqual(self.records[0]["semantic_model"], jev.LUNA)
         self.assertEqual(self.records[1]["gate"], "astra_policy")
 
+    def test_all_sol_experiment_requires_a_real_session_cache_key(self):
+        Path(jev.SOL_BASELINE_PATH).write_text(
+            json.dumps({"percent": 100, "until": "2099-01-01T00:00:00+00:00"})
+        )
+        sent = payload_for([message("user", "simple task")])
+        sent.pop("prompt_cache_key")
+        with mock.patch.object(
+            jev, "call_jev_routed", return_value=answer(jev.LUNA, "low")
+        ):
+            self.call(sent)
+        self.assertEqual(Edge.payloads[-1]["model"], jev.LUNA)
+        self.assertIsNone(self.records[-1]["experiment"])
+
     def test_next_decision_sees_successful_models_as_cache_affinity(self):
         opening = [message("user", "implement the bounded change")]
         continuation = opening + [tool_call("c0"), tool_step("c0", "ok")]
