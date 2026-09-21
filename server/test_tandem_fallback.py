@@ -424,9 +424,17 @@ class TandemHandoff(unittest.TestCase):
             try:
                 Edge.refuse = (jev.ASTRA,)
                 Edge.reset_at = time.time() + 1800
-                status, body = self.call()
+                status, body = self.call(reasoning={"effort": "max"})
                 self.assertEqual(status, 200, body)
                 self.assertEqual([model for model, _ in Edge.attempts], [jev.ASTRA, jev.GO_FRONTIER])
+                self.assertEqual(
+                    Edge.payloads[0]["input"][0].get("type"), "configuration_update"
+                )
+                self.assertFalse(any(
+                    item.get("type") == "configuration_update"
+                    for item in Edge.payloads[1]["input"]
+                    if isinstance(item, dict)
+                ))
                 with open(state, encoding="utf-8") as fh:
                     flipped = json.load(fh)
                 self.assertAlmostEqual(
