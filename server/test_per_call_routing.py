@@ -63,6 +63,7 @@ def payload_for(items, cache_key="pck-thread-1", **overrides):
         "stream": True,
         "instructions": "You are Codex.",
         "prompt_cache_key": cache_key,
+        "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
         "input": items,
         "tools": [{"type": "function", "name": "exec_command"}],
     }
@@ -217,18 +218,22 @@ class PerCallEndToEnd(unittest.TestCase):
         for key in ("task", "active_task", "step", "intent_tail", "tool", "tool_result_tail"):
             self.assertNotIn(key, forwarded)
 
-    def test_prompt_cache_key_survives_model_swaps_unchanged(self):
+    def test_cache_controls_and_canonical_replay_survive_model_swaps_unchanged(self):
         cache_key = "stable-private-session-key"
+        first = [message("user", "first")]
+        second = [message("user", "first"), tool_call("c"), tool_step("c", "done")]
         with mock.patch.object(
             jev, "call_jev_routed",
             side_effect=[answer(jev.LUNA, "low"), answer(jev.SOL, "high")],
         ):
-            self.call(payload_for([message("user", "first")], cache_key=cache_key))
-            self.call(payload_for(
-                [message("user", "first"), tool_call("c"), tool_step("c", "done")],
-                cache_key=cache_key,
-            ))
+            self.call(payload_for(first, cache_key=cache_key))
+            self.call(payload_for(second, cache_key=cache_key))
         self.assertEqual([p["prompt_cache_key"] for p in Edge.payloads], [cache_key, cache_key])
+        self.assertEqual(
+            [p["prompt_cache_options"] for p in Edge.payloads],
+            [{"mode": "implicit", "ttl": "30m"}] * 2,
+        )
+        self.assertEqual([p["input"] for p in Edge.payloads], [first, second])
         self.assertNotIn(cache_key, json.dumps(self.records))
 
     def test_two_threads_route_independently(self):

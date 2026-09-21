@@ -154,24 +154,35 @@ def prompt_cache_usage(entries):
     last_model = {}
     seen_models = {}
     switches = revisits = 0
+    switch_observed = switch_unknown = switch_hits = 0
+    switch_input = switch_cached = 0
+    revisit_observed = revisit_unknown = revisit_hits = 0
+    revisit_input = revisit_cached = 0
 
     for entry in entries:
         scope = entry.get("cache_scope")
         selected = entry.get("native")
+        switched = revisited = False
         if isinstance(scope, str) and scope:
             scopes.add(scope)
             if selected in CREDIT_RATES:
                 previous = last_model.get(scope)
                 seen = seen_models.setdefault(scope, set())
                 if previous is not None and selected != previous:
+                    switched = True
                     switches += 1
                     if selected in seen:
+                        revisited = True
                         revisits += 1
                 seen.add(selected)
                 last_model[scope] = selected
 
         attempts = entry.get("attempts")
         if not isinstance(attempts, list):
+            if switched:
+                switch_unknown += 1
+                if revisited:
+                    revisit_unknown += 1
             continue
         for attempt in attempts:
             model = attempt.get("model")
@@ -202,6 +213,37 @@ def prompt_cache_usage(entries):
             if isinstance(scope, str) and scope:
                 row["sessions"].add(scope)
 
+        if switched:
+            selected_attempt = next(
+                (attempt for attempt in attempts if attempt.get("model") == selected),
+                None,
+            )
+            usage = selected_attempt.get("usage") if isinstance(selected_attempt, dict) else None
+            inp = usage.get("input_tokens") if isinstance(usage, dict) else None
+            cached = usage.get("cached_input_tokens") if isinstance(usage, dict) else None
+            valid = (
+                not isinstance(inp, bool)
+                and isinstance(inp, int)
+                and inp >= 0
+                and not isinstance(cached, bool)
+                and isinstance(cached, int)
+                and 0 <= cached <= inp
+            )
+            if valid:
+                switch_observed += 1
+                switch_input += inp
+                switch_cached += cached
+                switch_hits += int(cached > 0)
+                if revisited:
+                    revisit_observed += 1
+                    revisit_input += inp
+                    revisit_cached += cached
+                    revisit_hits += int(cached > 0)
+            else:
+                switch_unknown += 1
+                if revisited:
+                    revisit_unknown += 1
+
     for row in rows.values():
         row["sessions"] = len(row["sessions"])
         row["hit_rate_pct"] = (
@@ -217,6 +259,36 @@ def prompt_cache_usage(entries):
         "tracked_sessions": len(scopes),
         "route_switches": switches,
         "model_revisits": revisits,
+        "switch_cache": {
+            "observed": switch_observed,
+            "unknown": switch_unknown,
+            "hit_attempts": switch_hits,
+            "input_tokens": switch_input,
+            "cached_input_tokens": switch_cached,
+            "hit_rate_pct": (
+                round(100.0 * switch_hits / switch_observed, 1)
+                if switch_observed else None
+            ),
+            "cached_share_pct": (
+                round(100.0 * switch_cached / switch_input, 1)
+                if switch_input else None
+            ),
+        },
+        "revisit_cache": {
+            "observed": revisit_observed,
+            "unknown": revisit_unknown,
+            "hit_attempts": revisit_hits,
+            "input_tokens": revisit_input,
+            "cached_input_tokens": revisit_cached,
+            "hit_rate_pct": (
+                round(100.0 * revisit_hits / revisit_observed, 1)
+                if revisit_observed else None
+            ),
+            "cached_share_pct": (
+                round(100.0 * revisit_cached / revisit_input, 1)
+                if revisit_input else None
+            ),
+        },
         "observed_attempts": observed,
         "unknown_attempts": unknown,
         "hit_attempts": hits,
@@ -571,6 +643,17 @@ def render_text(rep):
               f"({fmt(cache['hit_rate_pct'])}%) · "
               f"{fmt(cache['cached_input_tokens'])}/{fmt(cache['input_tokens'])} input tokens cached "
               f"({fmt(cache['cached_share_pct'])}%) · {cache['unknown_attempts']} unknown"]
+    if cache["route_switches"]:
+        switch_cache = cache["switch_cache"]
+        revisit_cache = cache["revisit_cache"]
+        lines += [
+            f"  after switches: {switch_cache['hit_attempts']}/{switch_cache['observed']} cache hits "
+            f"({fmt(switch_cache['cached_share_pct'])}% of input cached; "
+            f"{switch_cache['unknown']} unknown)",
+            f"  on model returns: {revisit_cache['hit_attempts']}/{revisit_cache['observed']} cache hits "
+            f"({fmt(revisit_cache['cached_share_pct'])}% of input cached; "
+            f"{revisit_cache['unknown']} unknown)",
+        ]
     if cache["by_model"]:
         cache_rows = []
         for model, row in sorted(cache["by_model"].items()):

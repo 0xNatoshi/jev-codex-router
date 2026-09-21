@@ -212,11 +212,12 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   reasoning effort — for every model call, including tool continuations and
   post-compaction calls. Provider retries inside one call keep that decision.
   The selected model always receives the complete canonical request and the
-  original `prompt_cache_key`; Jev receives only the bounded decision dossier.
-  A context-dependent short ask also gets one bounded active-task summary.
-  Cache reuse is measured per `(hashed session, model)`, never assumed across
-  models. All tiers use adaptive effort and standard speed; never force Luna to
-  max or enable Fast mode.
+  original cache controls; Jev receives only the bounded decision dossier. A
+  context-dependent short ask also gets one bounded active-task summary. Cache
+  hits are a cost optimization, never the carrier of conversation continuity:
+  reuse is measured per `(hashed session, model)`, while every model swap still
+  gets the full replay. All tiers use adaptive effort and standard speed; never
+  force Luna to max or enable Fast mode.
 - No scenario overrides, target model shares, or confidence threshold may
   replace a valid Jev choice with Sol, Luna or Astra. Confidence is diagnostic.
 - Provider/schema failures remain distinct: Astra at medium, logged as a

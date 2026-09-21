@@ -174,11 +174,24 @@ ask. The executing model receives the caller's canonical request in full, with
 only the selected model, reasoning effort, standard service tier and required
 streaming flag changed.
 
-The original `prompt_cache_key` is forwarded unchanged. Cache reuse is therefore
-maintained separately for each `(session, model)` pair: returning to a model can
-reuse its stable prefix, but switching models is not treated as a shared cache
-hit. The report hashes session ids before logging them and shows actual
-`cached_input_tokens` by model; it does not claim cross-model cache reuse.
+Context continuity is unconditional: every selected model receives the complete
+canonical request, so a cache miss can increase processed input but can never
+remove conversation facts. Cache controls (`prompt_cache_key` and
+`prompt_cache_options`) are forwarded unchanged. GPT-5.6+ automatically caches
+the stable rendered prefix separately for each model: the first arrival on a
+model may be cold, while a later return can reuse that model's earlier prefix.
+There is no cross-model KV-cache handoff, because those tensors belong to the
+weights of the model that produced them
+([OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)).
+The report hashes session ids before logging them and shows actual
+`cached_input_tokens` by model, including cache hits immediately after a switch
+and when returning to a previously used model.
+
+In one observed 32k-token tool loop, Sol → Luna reused 24,832 Luna-cached tokens,
+the return to Sol reused 25,216 Sol-cached tokens, and the next Luna call reused
+its same 24,832-token prefix. This is the intended behavior: complete logical
+context on every call, with one independently warming cache per model rather
+than repeated full re-contextualization.
 
 ## Ask surface (`POST /ask`)
 

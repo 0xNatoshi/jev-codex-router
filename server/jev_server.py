@@ -20,6 +20,9 @@ judgment input only: the executing model always receives the caller's canonical
 request untouched, never that projection. The caller's prompt_cache_key also
 passes through untouched, allowing each selected model to reuse its own cache
 for this session; caches are not assumed to be shared across different models.
+Context continuity does not depend on those cache hits: every selected model
+receives the full canonical request. Cache reuse only changes how much of that
+identical prefix the provider must process and bill again.
 
 Input handling (v5): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
