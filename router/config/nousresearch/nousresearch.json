@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "nousresearch",
+      "displayName": "Nous Research (Hermes)",
+      "kind": "openai-compatible",
+      "ownedBy": "nousresearch",
+      "baseUrl": "https://inference-api.nousresearch.com/v1",
+      "baseUrlEnv": "NOUS_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "NOUS_API_KEY",
+          "NOUS_PORTAL_API_KEY"
+        ],
+        "file": "nousresearch-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-nousresearch"
+        ],
+        "prompt": "Nous Portal API key"
+      }
+    }
+  ]
+}

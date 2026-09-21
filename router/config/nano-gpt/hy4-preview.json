@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nano-gpt/tencent/hy4-preview",
+      "gatewayModel": "nano-gpt-tencent-hy4-preview",
+      "upstreamModel": "tencent/hy4-preview",
+      "provider": "nano-gpt",
+      "listed": true,
+      "displayName": "Hy4 Preview (NanoGPT)",
+      "description": "Tencent Hy4 Preview through NanoGPT.",
+      "priority": 100,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "No thinking"
+        },
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "hy4-reasoning",
+      "compHash": "nano-gpt-tencent-hy4-preview-v1"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "qwen-plan/deepseek-v4-pro",
+      "gatewayModel": "qwen-plan-deepseek-v4-pro",
+      "upstreamModel": "deepseek-v4-pro",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (Qwen Plan)",
+      "description": "DeepSeek V4 Pro served through an Alibaba Model Studio Token or Coding Plan subscription rather than a separate DeepSeek API key.",
+      "priority": 17,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-deepseek-v4-pro-v1"
+    }
+  ]
+}

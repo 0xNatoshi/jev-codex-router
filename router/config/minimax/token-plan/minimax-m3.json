@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "minimax-token-plan/minimax-m3",
+      "gatewayModel": "minimax-token-plan-minimax-m3",
+      "upstreamModel": "MiniMax-M3",
+      "provider": "minimax-token-plan",
+      "listed": true,
+      "displayName": "MiniMax M3",
+      "description": "MiniMax M3 using a MiniMax Token Plan API key.",
+      "priority": 24,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive reasoning for agentic coding"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "minimax-m3",
+      "supportsImageDetailOriginal": true,
+      "compHash": "minimax-token-plan-minimax-m3-v2"
+    }
+  ]
+}

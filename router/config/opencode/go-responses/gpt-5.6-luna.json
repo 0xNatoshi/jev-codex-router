@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go-responses/gpt-5.6-luna",
+      "gatewayModel": "opencode-go-responses-gpt-5-6-luna",
+      "upstreamModel": "gpt-5.6-luna",
+      "provider": "opencode-go-responses",
+      "listed": true,
+      "displayName": "GPT 5.6 Luna (opencode Go)",
+      "description": "GPT 5.6 Luna through the opencode Go subscription using the Responses API.",
+      "priority": 47,
+      "defaultEffort": "medium",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 272000,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-responses-gpt-5-6-luna-v1",
+      "supportsReasoningSummaries": true,
+      "defaultReasoningSummary": "auto"
+    }
+  ]
+}

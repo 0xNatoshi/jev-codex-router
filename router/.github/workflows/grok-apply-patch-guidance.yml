@@ -1,0 +1,172 @@
+# Ordinary `npm test` in ci.yml is Node-only. LiteLLM custom-tool translation
+# for grok-oauth/grok-4.6 is proven here against the hash-locked Python tree
+# and a mock xAI Responses server — never against a machine-local install and
+# never against live credentials.
+name: Grok apply_patch protocol
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - "requirements/**"
+      - "bin/install"
+      - "install.ps1"
+      - "src/install-plan.mjs"
+      - "src/grok-apply-patch-guidance.mjs"
+      - "src/grok-structured-patch.mjs"
+      - "src/grok-patch-hook*.mjs"
+      - "src/codex-patch-hook-endpoint.mjs"
+      - "src/responses-websocket.mjs"
+      - "src/caller-auth.mjs"
+      - "test/codex-patch-hook-endpoint.test.mjs"
+      - "scripts/grok-patch-hook.mjs"
+      - "test/grok-patch-hook*.test.mjs"
+      - "src/namespace-relay.mjs"
+      - "src/grok-oauth-forwarder.mjs"
+      - "src/grok-oauth-turn.mjs"
+      - "src/grok_service_tier_callback.py"
+      - "src/litellm-config.mjs"
+      - "scripts/verify-grok-service-tier.mjs"
+      - "config/grok/oauth/grok-4.6.json"
+      - "src/router.mjs"
+      - "src/request-diagnostics.mjs"
+      - "src/response-usage.mjs"
+      - "src/usage-events.mjs"
+      - "scripts/verify-grok-apply-patch-guidance.mjs"
+      - "src/config-manager.mjs"
+      - "src/caller-key-client-refresh.mjs"
+      - "src/service-linux.mjs"
+      - "src/service-macos.mjs"
+      - "src/service-windows.mjs"
+      - "src/fetch-transport.mjs"
+      - "src/grok-stream-timeouts.mjs"
+      - "src/responses-heartbeat.mjs"
+      - "src/empty-completion-guard.mjs"
+      - "test/grok-structured-patch*.test.mjs"
+      - ".github/workflows/grok-apply-patch-guidance.yml"
+  pull_request:
+    paths:
+      - "requirements/**"
+      - "bin/install"
+      - "install.ps1"
+      - "src/install-plan.mjs"
+      - "src/grok-apply-patch-guidance.mjs"
+      - "src/grok-structured-patch.mjs"
+      - "src/grok-patch-hook*.mjs"
+      - "src/codex-patch-hook-endpoint.mjs"
+      - "src/responses-websocket.mjs"
+      - "src/caller-auth.mjs"
+      - "test/codex-patch-hook-endpoint.test.mjs"
+      - "scripts/grok-patch-hook.mjs"
+      - "test/grok-patch-hook*.test.mjs"
+      - "src/namespace-relay.mjs"
+      - "src/grok-oauth-forwarder.mjs"
+      - "src/grok-oauth-turn.mjs"
+      - "src/grok_service_tier_callback.py"
+      - "src/litellm-config.mjs"
+      - "scripts/verify-grok-service-tier.mjs"
+      - "config/grok/oauth/grok-4.6.json"
+      - "src/router.mjs"
+      - "src/request-diagnostics.mjs"
+      - "src/response-usage.mjs"
+      - "src/usage-events.mjs"
+      - "scripts/verify-grok-apply-patch-guidance.mjs"
+      - "src/config-manager.mjs"
+      - "src/caller-key-client-refresh.mjs"
+      - "src/service-linux.mjs"
+      - "src/service-macos.mjs"
+      - "src/service-windows.mjs"
+      - "src/fetch-transport.mjs"
+      - "src/grok-stream-timeouts.mjs"
+      - "src/responses-heartbeat.mjs"
+      - "src/empty-completion-guard.mjs"
+      - "test/grok-structured-patch*.test.mjs"
+      - ".github/workflows/grok-apply-patch-guidance.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grok-apply-patch-guidance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    name: ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - run: npm ci
+
+      - name: Install uv
+        shell: bash
+        run: python -m pip install uv
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          python --version
+          node --version
+          uv --version
+          if [ "${{ runner.os }}" = macOS ]; then rustc --version || echo "rustc not on PATH"; fi
+
+      - name: Read the installer's own install command
+        id: installer
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = Windows ]; then platform=windows; else platform=posix; fi
+          install_command=$(node src/install-plan.mjs python-install-command uv "$platform")
+          echo "Extracted from the installer: $install_command"
+          echo "command=$install_command" >> "$GITHUB_OUTPUT"
+
+      - name: Create the environment the way the installer does
+        shell: bash
+        run: uv venv --python 3.12 .venv
+
+      - name: Install the lock (POSIX installer command)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          INSTALL_COMMAND: ${{ steps.installer.outputs.command }}
+        run: sh -c "$INSTALL_COMMAND"
+
+      - name: Install the lock (PowerShell installer command)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          INSTALL_COMMAND: ${{ steps.installer.outputs.command }}
+        run: |
+          $Python = Join-Path $PWD ".venv\Scripts\python.exe"
+          Invoke-Expression $env:INSTALL_COMMAND
+          if ($LASTEXITCODE -ne 0) { throw "The locked install failed with $LASTEXITCODE." }
+
+      - name: Verify Grok apply_patch guidance through Router, LiteLLM, and the Grok forwarder
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = Windows ]; then
+            venv_python=.venv/Scripts/python.exe
+          else
+            venv_python=.venv/bin/python
+          fi
+          node scripts/verify-grok-apply-patch-guidance.mjs "$venv_python"
+          node scripts/verify-grok-apply-patch-guidance.mjs "$venv_python" --structured
+          node scripts/verify-grok-apply-patch-guidance.mjs "$venv_python" --native-hook
+          node scripts/verify-grok-apply-patch-guidance.mjs "$venv_python" --native-hook --native-hook-endpoint
+          node scripts/verify-grok-service-tier.mjs "$venv_python"

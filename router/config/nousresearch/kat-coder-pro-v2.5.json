@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/kat-coder-pro-v2.5",
+      "gatewayModel": "nousresearch-kat-coder-pro-v2-5",
+      "upstreamModel": "kwaipilot/kat-coder-pro-v2.5",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Kat Coder Pro v2.5 (Nous Research)",
+      "description": "KwaiPilot Kat Coder Pro v2.5 through the Nous Portal.",
+      "priority": 70,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 256000,
+      "autoCompact": 230000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-kat-coder-pro-v2-5-v1"
+    }
+  ]
+}

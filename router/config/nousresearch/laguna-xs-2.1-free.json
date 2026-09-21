@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/laguna-xs-2.1-free",
+      "gatewayModel": "nousresearch-laguna-xs-2-1-free",
+      "upstreamModel": "poolside/laguna-xs-2.1:free",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Laguna XS 2.1 (Nous Research)",
+      "description": "Laguna XS 2.1 through the Nous Portal free tier, with reasoning enabled by default.",
+      "priority": 68,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235929,
+      "inputModalities": [
+        "text"
+      ],
+      "isFree": true,
+      "compHash": "nousresearch-laguna-xs-2-1-free-v1"
+    }
+  ]
+}

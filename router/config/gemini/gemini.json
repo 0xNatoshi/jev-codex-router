@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "gemini-api",
+      "displayName": "Google Gemini API",
+      "kind": "openai-compatible",
+      "ownedBy": "google",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "baseUrlEnv": "GEMINI_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "GEMINI_API_KEY",
+          "GOOGLE_API_KEY"
+        ],
+        "file": "gemini-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-gemini-api"
+        ],
+        "prompt": "Google Gemini API key"
+      }
+    }
+  ]
+}

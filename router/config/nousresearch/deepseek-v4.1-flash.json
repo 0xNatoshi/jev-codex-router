@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/deepseek-v4.1-flash",
+      "gatewayModel": "nousresearch-deepseek-v4-1-flash",
+      "upstreamModel": "deepseek/deepseek-v4.1-flash",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "DeepSeek V4.1 Flash (Nous Research)",
+      "description": "DeepSeek V4.1 Flash through the Nous Portal; image understanding, tool calls, and low/high/max reasoning. The Portal's serving provider caps context at 262,144 tokens.",
+      "priority": 89,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 134000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "nousresearch-deepseek-v4-1-flash-v1"
+    }
+  ]
+}

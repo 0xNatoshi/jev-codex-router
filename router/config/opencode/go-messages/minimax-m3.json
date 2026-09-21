@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go-messages/minimax-m3",
+      "gatewayModel": "opencode-go-messages-minimax-m3",
+      "upstreamModel": "minimax-m3",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "MiniMax M3 (opencode Go)",
+      "description": "MiniMax M3 through the opencode Go subscription using the Messages API.",
+      "priority": 40,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "opencode-go-messages-minimax-m3-v2"
+    }
+  ]
+}

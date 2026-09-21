@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/qwen3.8-flash",
+      "gatewayModel": "commandcode-qwen3-8-flash",
+      "upstreamModel": "Qwen/Qwen3.8-Flash",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Qwen3.8 Flash (Command Code)",
+      "description": "Qwen3.8 Flash through the Command Code Provider API. Fast tier with vision input.",
+      "priority": 107,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "commandcode-qwen3-8-flash-v1"
+    }
+  ]
+}

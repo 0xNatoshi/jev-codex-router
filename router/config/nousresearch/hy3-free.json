@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/hy3-free",
+      "gatewayModel": "nousresearch-hy3-free",
+      "upstreamModel": "tencent/hy3:free",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Hy3 (Nous Research)",
+      "description": "Tencent Hy3 through the Nous Portal free tier.",
+      "priority": 66,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235929,
+      "inputModalities": [
+        "text"
+      ],
+      "isFree": true,
+      "compHash": "nousresearch-hy3-free-v1"
+    }
+  ]
+}

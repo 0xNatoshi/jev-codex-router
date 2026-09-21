@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "deepseek",
+      "displayName": "DeepSeek API",
+      "kind": "openai-compatible",
+      "ownedBy": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "baseUrlEnv": "DEEPSEEK_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "DEEPSEEK_API_KEY"
+        ],
+        "file": "deepseek-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-deepseek-api"
+        ],
+        "prompt": "DeepSeek API key"
+      }
+    }
+  ]
+}

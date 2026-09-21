@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "deepseek/deepseek-reasoner",
+      "gatewayModel": "deepseek-legacy-reasoner",
+      "upstreamModel": "deepseek-reasoner",
+      "provider": "deepseek",
+      "listed": false,
+      "requestProfile": "deepseek-thinking",
+      "supportsReasoningSummaries": true
+    }
+  ]
+}

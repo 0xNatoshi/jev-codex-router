@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+# The name on PATH may be a symlink to this script, so walk the chain before
+# locating the repository root, and resolve that root physically: `dirname $0`
+# alone points beside the link, and a logical `..` climbs out of a linked
+# directory to a path node does not recognise as a module's own when it guards
+# main, so the command would quietly do nothing.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+repo_dir=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd -P)
+cd "$repo_dir"
+case "${MODEL_ROUTER_TARGET:-codex}" in
+  dsh) ;;
+  codex) echo "Codex configures native subagents with ./bin/multi-agent." >&2; exit 2 ;;
+  gemini) echo "The router does not configure Gemini CLI subagents; it publishes models, not agent definitions." >&2; exit 2 ;;
+  cursor) echo "The router does not configure Cursor subagents; it publishes routed models to Cursor." >&2; exit 2 ;;
+  *) echo "MODEL_ROUTER_TARGET must be codex, dsh, gemini, or cursor." >&2; exit 2 ;;
+esac
+node --input-type=module -e '
+import { subagentPreset } from "./src/dsh-config-manager.mjs";
+const preset = subagentPreset();
+if (!preset.yaml) {
+  console.error("No routed model is available to delegate to. Enable a provider first.");
+  process.exit(1);
+}
+process.stdout.write(
+  "A child with no model of its own inherits the default model selection, which is\n" +
+  "already a routed model once this route is the default. Paste the block below into\n" +
+  "your preset\x27s agent.cordis.yml only to put children on a different routed model\n" +
+  "from their parent.\n\n" + preset.yaml + "\n\n" +
+  "Subagent-proven routed models: " + (preset.provenModels.join(", ") || "none yet") + "\n",
+);
+'

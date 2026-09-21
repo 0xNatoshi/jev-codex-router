@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "fireworks",
+      "displayName": "Fireworks AI",
+      "kind": "openai-compatible",
+      "ownedBy": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "baseUrlEnv": "FIREWORKS_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "FIREWORKS_API_KEY"
+        ],
+        "file": "fireworks-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-fireworks"
+        ],
+        "prompt": "Fireworks AI API key"
+      }
+    }
+  ]
+}

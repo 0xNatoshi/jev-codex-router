@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/glm-5.1",
+      "gatewayModel": "opencode-go-glm-5-1",
+      "upstreamModel": "glm-5.1",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.1 (opencode Go)",
+      "description": "GLM-5.1 through the opencode Go subscription.",
+      "priority": 32,
+      "upgradeTo": {
+        "model": "opencode-go/glm-5.2",
+        "markdown": "GLM-5.2 is available on your opencode Go subscription\n\n{model_to} is the next GLM generation after {model_from}, with the same 1M-token context window plus a Max reasoning tier for harder agent work. Accept to switch your default model; GLM-5.1 stays available in the picker."
+      },
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-1-v1"
+    }
+  ]
+}

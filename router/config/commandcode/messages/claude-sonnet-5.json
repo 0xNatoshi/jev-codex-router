@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode-messages/claude-sonnet-5",
+      "gatewayModel": "commandcode-messages-claude-sonnet-5",
+      "upstreamModel": "claude-sonnet-5",
+      "provider": "commandcode-messages",
+      "listed": true,
+      "displayName": "Claude Sonnet 5 (Command Code)",
+      "description": "Claude Sonnet 5 through the Command Code Provider API using the Messages API.",
+      "priority": 131,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-messages-claude-sonnet-5-v1"
+    }
+  ]
+}

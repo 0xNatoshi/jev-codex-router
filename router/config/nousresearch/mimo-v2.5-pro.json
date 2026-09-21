@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/mimo-v2.5-pro",
+      "gatewayModel": "nousresearch-mimo-v2-5-pro",
+      "upstreamModel": "xiaomi/mimo-v2.5-pro",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "MiMo v2.5 Pro (Nous Research)",
+      "description": "Xiaomi MiMo v2.5 Pro through the Nous Portal.",
+      "priority": 79,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1050000,
+      "autoCompact": 945000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-mimo-v2-5-pro-v1"
+    }
+  ]
+}

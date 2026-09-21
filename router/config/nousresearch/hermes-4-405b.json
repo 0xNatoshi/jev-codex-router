@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/hermes-4-405b",
+      "gatewayModel": "nousresearch-hermes-4-405b",
+      "upstreamModel": "nousresearch/hermes-4-405b",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Hermes 4 405B (Nous Research)",
+      "description": "Nous's own 405B hybrid-reasoning model, routed through the Nous Portal.",
+      "priority": 94,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 117964,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-hermes-4-405b-v1"
+    }
+  ]
+}

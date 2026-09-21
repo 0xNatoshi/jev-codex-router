@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "clinepass/tencent/hy4-preview",
+      "gatewayModel": "clinepass-tencent-hy4-preview",
+      "upstreamModel": "tencent/hy4-preview",
+      "provider": "clinepass",
+      "listed": true,
+      "displayName": "Hy4 Preview (ClinePass)",
+      "description": "Tencent Hy4 Preview through ClinePass.",
+      "priority": 100,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Default model behavior"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "clinepass",
+      "compHash": "clinepass-tencent-hy4-preview-v1"
+    }
+  ]
+}

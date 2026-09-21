@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "huggingface",
+      "displayName": "Hugging Face Router",
+      "kind": "openai-compatible",
+      "ownedBy": "huggingface",
+      "baseUrl": "https://router.huggingface.co/v1",
+      "baseUrlEnv": "HUGGINGFACE_BASE_URL",
+      "credential": {
+        "environment": [
+          "HF_TOKEN",
+          "HUGGINGFACE_API_KEY"
+        ],
+        "file": "huggingface-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-huggingface"
+        ],
+        "prompt": "Hugging Face access token"
+      }
+    }
+  ]
+}

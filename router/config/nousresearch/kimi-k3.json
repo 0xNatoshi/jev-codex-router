@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/kimi-k3",
+      "gatewayModel": "nousresearch-kimi-k3",
+      "upstreamModel": "moonshotai/kimi-k3",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Kimi K3 (Nous Research)",
+      "description": "Moonshot Kimi K3 through the Nous Portal.",
+      "priority": 86,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 943000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-kimi-k3-v1"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/gpt-5.6-terra",
+      "gatewayModel": "nousresearch-gpt-5-6-terra",
+      "upstreamModel": "openai/gpt-5.6-terra",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "GPT-5.6 Terra (Nous Research)",
+      "description": "OpenAI GPT-5.6 Terra through the Nous Portal.",
+      "priority": 75,
+      "defaultEffort": "medium",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1050000,
+      "autoCompact": 945000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-gpt-5-6-terra-v1"
+    }
+  ]
+}

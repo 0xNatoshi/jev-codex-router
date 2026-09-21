@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/kimi-k2.7-code",
+      "gatewayModel": "ollama-cloud-kimi-k2-7-code",
+      "upstreamModel": "kimi-k2.7-code",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "Kimi K2.7 Code (Ollama Cloud)",
+      "description": "Kimi K2.7 Code hosted on Ollama Cloud for coding agents with a 256k context window.",
+      "priority": 21,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Always-on coding reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "ollama-cloud",
+      "compHash": "ollama-cloud-kimi-k2-7-code-v1"
+    }
+  ]
+}

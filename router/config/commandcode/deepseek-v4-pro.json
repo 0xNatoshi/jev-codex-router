@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/deepseek-v4-pro",
+      "gatewayModel": "commandcode-deepseek-v4-pro",
+      "upstreamModel": "deepseek/deepseek-v4-pro",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (Command Code)",
+      "description": "DeepSeek V4 Pro through the Command Code Provider API.",
+      "priority": 101,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-deepseek-v4-pro-v1"
+    }
+  ]
+}

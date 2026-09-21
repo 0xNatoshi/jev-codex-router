@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/deepseek-v4-pro",
+      "gatewayModel": "ollama-cloud-deepseek-v4-pro",
+      "upstreamModel": "deepseek-v4-pro",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (Ollama Cloud)",
+      "description": "DeepSeek V4 Pro hosted on Ollama Cloud with reasoning and a 512k context window.",
+      "priority": 23,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 524288,
+      "autoCompact": 470000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "ollama-cloud",
+      "compHash": "ollama-cloud-deepseek-v4-pro-v2"
+    }
+  ]
+}

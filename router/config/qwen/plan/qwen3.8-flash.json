@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "qwen-plan/qwen3.8-flash",
+      "gatewayModel": "qwen-plan-qwen3-8-flash",
+      "upstreamModel": "qwen3.8-flash",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "Qwen3.8 Flash (Plan)",
+      "description": "Qwen3.8 Flash through an Alibaba Model Studio Token or Coding Plan subscription; fastest tier with vision input for high-volume work.",
+      "priority": 16,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive reasoning tuned for speed"
+        }
+      ],
+      "contextWindow": 983616,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "qwen-plan",
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-8-flash-v1"
+    }
+  ]
+}

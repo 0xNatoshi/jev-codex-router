@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "grok-oauth/grok-4.6",
+      "gatewayModel": "grok-oauth-grok-4-6",
+      "upstreamModel": "grok-4.6",
+      "provider": "grok-oauth",
+      "listed": true,
+      "displayName": "Grok 4.6 (OAuth)",
+      "description": "Grok 4.6 through the official Grok CLI OAuth session with long-running agentic coding, tool calls, and hosted web/X search.",
+      "priority": 1,
+      "defaultEffort": "high",
+      "serviceTiers": [{ "id": "priority", "name": "Fast", "description": "Use priority processing when available." }],
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 500000,
+      "autoCompact": 440000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "instructionOverlay": "filesystem-mcp-discipline",
+      "requestProfile": "xai-reasoning",
+      "supportsReasoningSummaries": true,
+      "searchTool": {
+        "mode": "hosted"
+      },
+      "supportsImageDetailOriginal": true,
+      "availabilityNux": "Grok 4.6 is xAI's new flagship for long-running agents, coding, and ambitious interactive and visual work.",
+      "compHash": "grok-oauth-grok-4-6-v1"
+    }
+  ]
+}

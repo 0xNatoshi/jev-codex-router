@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/hy4-preview",
+      "gatewayModel": "commandcode-hy4-preview",
+      "upstreamModel": "tencent/hy4-preview",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Hy4 Preview (Command Code)",
+      "description": "Tencent Hy4 Preview through the Command Code Provider API.",
+      "priority": 123,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Default generation"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-hy4-preview-v1"
+    }
+  ]
+}

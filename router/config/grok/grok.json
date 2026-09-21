@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "grok-oauth",
+      "displayName": "xAI Grok OAuth",
+      "kind": "oauth",
+      "ownedBy": "xai",
+      "proxyBaseEnv": "GROK_OAUTH_FORWARD_BASE_URL"
+    },
+    {
+      "id": "grok-api",
+      "displayName": "xAI Grok API",
+      "kind": "openai-compatible",
+      "ownedBy": "xai",
+      "baseUrl": "https://api.x.ai/v1",
+      "baseUrlEnv": "XAI_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "XAI_API_KEY",
+          "GROK_API_KEY"
+        ],
+        "file": "xai-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-xai-api"
+        ],
+        "prompt": "xAI API key"
+      }
+    }
+  ]
+}

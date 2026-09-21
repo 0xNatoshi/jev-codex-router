@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "minimax-token-plan",
+      "displayName": "MiniMax Token Plan",
+      "kind": "openai-compatible",
+      "ownedBy": "minimax",
+      "baseUrl": "https://api.minimax.io/v1",
+      "baseUrlEnv": "MINIMAX_BASE_URL",
+      "credential": {
+        "environment": [
+          "MINIMAX_API_KEY",
+          "MINIMAX_TOKEN_PLAN_API_KEY"
+        ],
+        "file": "minimax-token-plan-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-minimax-token-plan"
+        ],
+        "prompt": "MiniMax Token Plan API key"
+      }
+    }
+  ]
+}

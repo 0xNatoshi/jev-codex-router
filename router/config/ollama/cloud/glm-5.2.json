@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/glm-5.2",
+      "gatewayModel": "ollama-cloud-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "GLM-5.2 (Ollama Cloud)",
+      "description": "GLM-5.2 hosted on Ollama Cloud with agentic coding and a 1M context window.",
+      "priority": 20,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 880000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "ollama-cloud",
+      "compHash": "ollama-cloud-glm-5-2-v2"
+    }
+  ]
+}

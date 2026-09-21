@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "clinepass/mimo-v2.5-pro",
+      "gatewayModel": "clinepass-mimo-v2-5-pro",
+      "upstreamModel": "cline-pass/mimo-v2.5-pro",
+      "provider": "clinepass",
+      "listed": true,
+      "displayName": "MiMo-V2.5-Pro (ClinePass)",
+      "description": "MiMo-V2.5-Pro through ClinePass.",
+      "priority": 58,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Default model behavior"
+        }
+      ],
+      "contextWindow": 1050000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "clinepass",
+      "compHash": "clinepass-mimo-v2-5-pro-v1"
+    }
+  ]
+}

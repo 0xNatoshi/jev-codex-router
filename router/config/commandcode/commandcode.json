@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "commandcode",
+      "displayName": "Command Code",
+      "kind": "openai-compatible",
+      "ownedBy": "commandcode",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "baseUrlEnv": "COMMANDCODE_BASE_URL",
+      "planNote": "Every Command Code plan except Go includes Provider API access; GOAT, Pro, Max, Team, and Provider accounts use this API and meter against their own credits.",
+      "credential": {
+        "environment": [
+          "COMMAND_CODE_API_KEY",
+          "COMMANDCODE_API_KEY"
+        ],
+        "file": "commandcode-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-commandcode"
+        ],
+        "prompt": "Command Code API key"
+      }
+    },
+    {
+      "id": "commandcode-messages",
+      "displayName": "Command Code Messages",
+      "kind": "openai-compatible",
+      "ownedBy": "commandcode",
+      "variantOf": "commandcode",
+      "protocol": "anthropic",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "baseUrlEnv": "COMMANDCODE_BASE_URL",
+      "credential": {
+        "environment": [
+          "COMMAND_CODE_API_KEY",
+          "COMMANDCODE_API_KEY"
+        ],
+        "file": "commandcode-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-commandcode"
+        ],
+        "prompt": "Command Code API key"
+      }
+    }
+  ]
+}

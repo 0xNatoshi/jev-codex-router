@@ -13,9 +13,11 @@ policy. This is not measured Codex quota saved, nor evidence for the current
 policy — protocol and limitations in [BACKTEST.md](BACKTEST.md).
 Installing with an AI agent? Hand it [AGENTS.md](AGENTS.md).
 
-This is not a fork of any router: it plugs into an existing local
-**Codex Router** installation through its official extension points
-(a *generic provider* + a *curated model*), so router updates never overwrite it.
+This repository is a self-contained monorepo. It embeds the maintained
+**Codex Router fork** under `router/` and connects Jev through its generic-provider
+and curated-model extension points. No second Git checkout, submodule, or hidden
+source clone is required. The imported fork and its provenance are documented in
+[ROUTER_FORK.md](ROUTER_FORK.md).
 
 ## How it works
 
@@ -39,7 +41,7 @@ Codex ──▶ Codex Router (:4202)
 - **Two independent projections** — Jev sees only the bounded decision state.
   The executing model receives the complete canonical replay held by Codex:
   instructions, history or compaction handoff, tool calls and tool results.
-  The upstream Codex Router must therefore exempt the exact `jev/auto` route
+  The embedded router exempts the exact `jev/auto` route
   from conversation windowing and tool-result aging; those optimizations would
   otherwise destroy context before this server could relay it.
 - **Fail-open** — any Jev error keeps the turn alive (safe fallback route).
@@ -80,7 +82,7 @@ reasoning. These profiles are routing priors, not measured capability guarantees
 Terra attempts are counted as native in reports; its ChatGPT credit estimate
 remains unknown until a verified credit rate is configured.
 
-Policy `split-v8-dossier-fidelity` judges remaining work rather than inheriting a
+Policy `split-v9-cache-aware` judges remaining work rather than inheriting a
 completed review's category. Explicit mechanical follow-through can use Luna;
 implied intent, underspecified goals and autonomous investigation favor Sol.
 The objective includes correction and clarification costs. There is no
@@ -239,11 +241,11 @@ Read that credential in memory from
 shell arguments, logs or a URL. Existing `/ask` callers must add this header.
 Browser-origin requests are rejected. Direct TypeSafe clients are unaffected.
 
-Provision the local credential using the parent's protected credential
+Provision the local credential using the embedded router's protected credential
 transaction, without entering or displaying it:
 
 ```sh
-node server/configure-auth.mjs /path/to/codex-router
+node server/configure-auth.mjs
 ```
 
 Do this after registering the `jev` provider and before restarting Jev. Missing
@@ -259,105 +261,60 @@ no key is configured.
 ## Repository layout
 
 ```
-BACKTEST.md  Savings backtest — protocol, tables, limitations (the "proof")
-AGENTS.md    Autonomous install & operations playbook (for AI agents)
-poc/         Tiering POC, shadow replay, and the backtest tool
-server/      The live server + service install (this is what runs)
-hook/        Explored alternative (LiteLLM callback tap) — kept for reference
+install.sh       One-command installer for the complete stack
+bin/             Unified Jev/router CLI
+router/          Embedded Codex Router fork and its own tests
+server/          Jev policy, relay, service, reports and tests
+poc/             Tiering POC, shadow replay and backtest tooling
+hook/            Explored callback alternative, kept for reference
+ROUTER_FORK.md   Fork provenance and ownership boundary
+AGENTS.md        Autonomous install and operations playbook
 ```
 
 ## Quickstart
 
-Prerequisites: macOS, a Codex desktop install wired to a **Codex Router**
-(checkout with `bin/codex-router`), Python 3.11+, and a TypeSafe API key (Jev).
+Prerequisites: macOS with Codex desktop, Node.js 22.19+, Python 3.11+, and a
+TypeSafe API key for Jev. No separate Codex Router checkout is needed.
 
 **1. Give the server your TypeSafe key** — either
 `export TYPESAFE_API_KEY=...` in the service environment, or:
 
 ```bash
 echo 'TYPESAFE_API_KEY=your-key' >> ~/.hermes/.env   # default env file
-# (override the path with JEV_ENV_FILE=/path/to/env)
 ```
 
-**2. Start the server** (foreground test):
+**2. Install the complete stack from this checkout** in your Terminal:
 
 ```bash
-python3 server/jev_server.py
-curl -s http://127.0.0.1:4319/health
+./install.sh
 ```
 
-**3. Register with the Codex Router:**
+The installer uses `router/` as the service source, preserves configured
+providers, idempotently adds `jev/auto`, provisions the protected loopback
+credential, enables native ChatGPT sharing, installs both launchd services, and
+runs `server/smoke.py`. It never clones or updates another repository.
 
-```bash
-cd <codex-router checkout>
-
-# share the native ChatGPT session with local clients (revisit if it expires)
-./bin/codex-router chatgpt-session enable
-
-# declare the generic provider (our local server, native Responses format)
-./bin/codex-router providers generic add jev \
-  --name "Jev Router" --base-url http://127.0.0.1:4319/v1 \
-  --adapter openai-responses --allow-private
-
-# declare the model: ~/.codex/codex-router/user-models.json
-# (this file is local state — router updates won't touch it)
-```
-
-```json
-{
-  "version": 1,
-  "models": [
-    {
-      "slug": "jev/auto",
-      "gatewayModel": "jev-auto",
-      "compHash": "jev-auto-user-v1",
-      "upstreamModel": "auto",
-      "provider": "jev",
-      "listed": true,
-      "displayName": "Jev Codex Router",
-      "description": "Auto-routing by Jev: every turn is classified and served by luna, terra, sol or astra at the thinking depth it needs.",
-      "priority": 95,
-      "defaultEffort": "medium",
-      "reasoningLevels": [
-        { "effort": "low", "description": "Quick reasoning" },
-        { "effort": "medium", "description": "Balanced reasoning" },
-        { "effort": "high", "description": "Deep reasoning" },
-        { "effort": "xhigh", "description": "Extended reasoning" },
-        { "effort": "max", "description": "Maximum reasoning" }
-      ],
-      "contextWindow": 258400,
-      "autoCompact": 219640,
-      "searchTool": { "mode": "hosted" },
-      "supportsSearchHistory": true,
-      "inputModalities": ["text", "image"]
-    }
-  ]
-}
-```
-
-```bash
-# publish the catalog and make the model visible in the picker
-./bin/codex-router refresh-catalog
-./bin/control picker set jev/auto show
-```
-
-**4. Quit and reopen Codex**, then pick **“Jev Codex Router”** in the model picker.
+**3. Quit and reopen Codex**, then pick **“Jev Codex Router”** in the model picker.
 Check the transport as well as the picker: `jev/auto` must reach the local
 router, not OpenAI's native endpoint. A catalog entry or a
 `[model_providers.jev]` declaration alone does not select that transport.
 See [transport troubleshooting](server/INSTALL.md#model-visible-but-rejected-by-chatgpt)
 if Codex reports that `jev/auto` is unsupported with a ChatGPT account.
 
-**5. Make it permanent** (optional but recommended): run the service installer
-in your own Terminal (launchd management is intentionally restricted inside
-supervised agents):
+For dependency preparation without touching services or local state:
 
 ```bash
-bash server/install-service.sh
+./install.sh --prepare-only
 ```
 
-Without it, `server/watchdog.sh` (cron every 5 min) restarts the server if it
-stops answering.
+The unified CLI exposes the embedded runtime without changing directory:
+
+```bash
+bin/jev-codex-router router status
+bin/jev-codex-router update
+bin/jev-codex-router smoke
+bin/jev-codex-router report --days 7
+```
 
 ## Operations
 
@@ -373,6 +330,7 @@ Validation from the Jev checkout:
 
 ```sh
 python3 -m unittest discover -s server -p 'test_*.py'
+(cd router && npm run check && npm test)
 python3 poc/eval_routing.py            # offline fixture/dossier validation
 python3 poc/eval_routing.py --live     # optional paid Jev-only calibration
 python3 server/smoke.py               # small end-to-end model call; checks running policy
@@ -393,15 +351,20 @@ per-call attribution are excluded from the historical cost baseline.
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
 | Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |
 | Inspect the dry auto state | `cat ~/.codex/codex-router/jev-router.codex-dry.json` (reason + expiry; auto-cleared by the next successful native call) |
-| Hide the model | `./bin/control picker set jev/auto hide` |
-| Disable the provider | `./bin/codex-router providers generic disable jev` |
-| Revoke native sharing | `./bin/codex-router chatgpt-session disable` |
+| Update the complete monorepo | `bin/jev-codex-router update` |
+| Hide the model | `router/bin/control picker set jev/auto hide` |
+| Disable the provider | `bin/jev-codex-router router providers generic disable jev` |
+| Revoke native sharing | `bin/jev-codex-router router chatgpt-session disable` |
 | Service status | `launchctl print gui/$(id -u)/com.thibaultsaintjean.jev-router` |
 
-**After a Codex Router update**, verify nothing was lost:
+`bin/jev-codex-router update` fetches this repository's `origin/main`, updates
+the complete checkout, then runs the root installer. It never updates the
+embedded fork from a separate upstream checkout.
+
+**After an update**, verify nothing was lost:
 
 ```bash
-./bin/codex-router providers generic list        # shows: SHOW jev
+bin/jev-codex-router router providers generic list  # shows: SHOW jev
 cat ~/.codex/codex-router/model-picker.json      # jev/auto in "visible"
 curl -s http://127.0.0.1:4319/health
 ```

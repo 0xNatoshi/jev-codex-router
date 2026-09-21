@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "kimi-oauth",
+      "displayName": "Kimi Code OAuth",
+      "kind": "oauth",
+      "ownedBy": "kimi",
+      "proxyBaseEnv": "KIMI_OAUTH_FORWARD_BASE_URL"
+    },
+    {
+      "id": "kimi-api",
+      "displayName": "Kimi Platform API (Global)",
+      "kind": "openai-compatible",
+      "ownedBy": "kimi",
+      "baseUrl": "https://api.moonshot.ai/v1",
+      "baseUrlEnv": "KIMI_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "KIMI_API_KEY",
+          "MOONSHOT_API_KEY"
+        ],
+        "file": "kimi-api-key.secret",
+        "legacyFiles": [
+          "api-key.secret"
+        ],
+        "keychainServices": [
+          "codex-router-kimi-api",
+          "kimi-codex-api"
+        ],
+        "prompt": "Kimi Platform API key"
+      }
+    },
+    {
+      "id": "kimi-api-cn",
+      "displayName": "Kimi Platform API (China)",
+      "kind": "openai-compatible",
+      "ownedBy": "kimi",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "baseUrlEnv": "KIMI_API_CN_BASE_URL",
+      "credential": {
+        "environment": [
+          "KIMI_API_CN_KEY",
+          "MOONSHOT_CN_API_KEY"
+        ],
+        "file": "kimi-api-cn-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-kimi-api-cn"
+        ],
+        "prompt": "Kimi Platform API key (China, platform.moonshot.cn)"
+      },
+      "planNote": "Keys are not interchangeable with the global platform: create this one at platform.moonshot.cn."
+    }
+  ]
+}

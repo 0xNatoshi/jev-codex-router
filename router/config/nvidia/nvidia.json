@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "nvidia-nim",
+      "displayName": "NVIDIA NIM",
+      "kind": "openai-compatible",
+      "ownedBy": "nvidia",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "baseUrlEnv": "NVIDIA_NIM_BASE_URL",
+      "credential": {
+        "environment": [
+          "NVIDIA_API_KEY",
+          "NVIDIA_NIM_API_KEY"
+        ],
+        "file": "nvidia-nim-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-nvidia-nim"
+        ],
+        "prompt": "NVIDIA NIM API key"
+      }
+    }
+  ]
+}

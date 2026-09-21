@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/minimax-m2.7",
+      "gatewayModel": "commandcode-minimax-m2-7",
+      "upstreamModel": "MiniMaxAI/MiniMax-M2.7",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "MiniMax M2.7 (Command Code)",
+      "description": "MiniMax M2.7 through the Command Code Provider API.",
+      "priority": 112,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 200000,
+      "autoCompact": 180000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-minimax-m2-7-v1"
+    }
+  ]
+}

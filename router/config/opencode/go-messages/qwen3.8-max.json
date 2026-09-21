@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go-messages/qwen3.8-max",
+      "gatewayModel": "opencode-go-messages-qwen3-8-max",
+      "upstreamModel": "qwen3.8-max",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "Qwen3.8 Max (opencode Go)",
+      "description": "Qwen3.8 Max through the opencode Go subscription using the Messages API.",
+      "priority": 42,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "opencode-go-messages-qwen3-8-max-v4",
+      "requestProfile": "omit-tool-choice"
+    }
+  ]
+}

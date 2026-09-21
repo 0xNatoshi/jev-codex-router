@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/glm-5.3-flash",
+      "gatewayModel": "opencode-go-glm-5-3-flash",
+      "upstreamModel": "glm-5.3-flash",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.3-Flash (opencode Go)",
+      "description": "GLM-5.3-Flash through the opencode Go subscription. Z.ai previously tested this multimodal model as Ox Alpha; the old router slug migrates here. Codex compacts conservatively because large live requests have returned empty completions.",
+      "priority": 29,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 400000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "ox-alpha",
+      "compHash": "opencode-go-glm-5-3-flash-v1"
+    }
+  ]
+}

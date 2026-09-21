@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "venice",
+      "displayName": "Venice",
+      "kind": "openai-compatible",
+      "ownedBy": "venice",
+      "baseUrl": "https://api.venice.ai/api/v1",
+      "baseUrlEnv": "VENICE_API_BASE_URL",
+      "planNote": "Venice API access needs a Pro account (the low-rate-limit Explorer tier), a USD balance, or staked VVV that grants VCU; a free Venice account has no API entitlement.",
+      "credential": {
+        "environment": [
+          "VENICE_API_KEY"
+        ],
+        "file": "venice-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-venice"
+        ],
+        "prompt": "Venice API key"
+      }
+    }
+  ]
+}

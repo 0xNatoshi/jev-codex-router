@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "kimi-api/kimi-k3",
+      "gatewayModel": "kimi-api-k3",
+      "upstreamModel": "kimi-k3",
+      "provider": "kimi-api",
+      "listed": true,
+      "multiAgentVersion": "v2",
+      "displayName": "Kimi K3 (API)",
+      "description": "Kimi K3 using a separately billed Kimi Platform API key.",
+      "priority": 5,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-k3",
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-api-k3-v3"
+    }
+  ]
+}

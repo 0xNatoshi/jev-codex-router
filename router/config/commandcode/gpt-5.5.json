@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/gpt-5.5",
+      "gatewayModel": "commandcode-gpt-5-5",
+      "upstreamModel": "gpt-5.5",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "GPT 5.5 (Command Code)",
+      "description": "GPT 5.5 through the Command Code Provider API.",
+      "priority": 119,
+      "defaultEffort": "medium",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 200000,
+      "autoCompact": 180000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-gpt-5-5-v1"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/qwen3.8-max",
+      "gatewayModel": "nousresearch-qwen3-8-max",
+      "upstreamModel": "qwen/qwen3.8-max",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Qwen 3.8 Max (Nous Research)",
+      "description": "Qwen 3.8 Max through the Nous Portal.",
+      "priority": 84,
+      "defaultEffort": "xhigh",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "Minimal reasoning"
+        },
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-qwen3-8-max-v1"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/hy3-paid",
+      "gatewayModel": "commandcode-hy3-paid",
+      "upstreamModel": "tencent/hy3-paid",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Hy3 (Command Code)",
+      "description": "Tencent Hy3 through the Command Code Provider API.",
+      "priority": 122,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-hy3-paid-v1"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/hy4-preview",
+      "gatewayModel": "opencode-go-hy4-preview",
+      "upstreamModel": "hy4-preview",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Hy4 Preview (opencode Go)",
+      "description": "Tencent Hy4 Preview through the opencode Go subscription.",
+      "priority": 47,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "No thinking"
+        },
+        {
+          "effort": "high",
+          "description": "Default generation"
+        }
+      ],
+      "contextWindow": 1024000,
+      "autoCompact": 920000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "hy4-reasoning",
+      "compHash": "opencode-go-hy4-preview-v1"
+    }
+  ]
+}
