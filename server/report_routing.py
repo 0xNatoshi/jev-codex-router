@@ -360,7 +360,11 @@ def experiment_comparison(entries):
     """Observed routed-vs-all-Sol cohort metrics; no equal-quality claim."""
     cohorts = {}
     for name in ("routed", "all_sol"):
-        selected = [entry for entry in entries if entry.get("experiment") == name]
+        selected = [
+            entry for entry in entries
+            if entry.get("experiment") == name
+            and entry.get("cache_key_present") is not False
+        ]
         if not selected:
             continue
         usage = measured_usage(selected)
