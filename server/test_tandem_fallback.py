@@ -41,6 +41,7 @@ MISMATCHED = (
 def jev_answer(tier, depth, confidence):
     pair = route_choice(tier, depth)
     return {"answers": {
+        "astra_policy": {"choice": pair["astra_policy"], "confidence": confidence},
         "model": {"choice": pair["model"], "confidence": confidence},
         "effort": {"choice": pair["effort"], "confidence": confidence},
     }}

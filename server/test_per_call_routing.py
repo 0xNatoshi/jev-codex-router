@@ -33,11 +33,12 @@ COMPLETED = (
 )
 
 
-def answer(tier, depth):
-    pair = route_choice(tier, depth)
+def answer(tier, depth, astra_required=False):
+    pair = route_choice(tier, depth, astra_required)
     return {
         "model": "jev-test",
         "answers": {
+            "astra_policy": {"choice": pair["astra_policy"], "confidence": 0.3},
             "model": {"choice": pair["model"], "confidence": 0.3},
             "effort": {"choice": pair["effort"], "confidence": 0.3},
         },
@@ -173,6 +174,20 @@ class PerCallEndToEnd(unittest.TestCase):
         )
         self.assertEqual([r["routing_scope"] for r in self.records], ["call"] * 4)
         self.assertEqual(len({r["cache_scope"] for r in self.records}), 1)
+
+    def test_mandatory_review_policy_forces_astra_without_changing_replay(self):
+        history = [message("user", "Review this code for security and performance.")]
+        sent = payload_for(history)
+        with mock.patch.object(
+            jev,
+            "call_jev_routed",
+            return_value=answer(jev.LUNA, "high", astra_required=True),
+        ):
+            self.call(sent)
+        self.assertEqual(Edge.payloads[-1]["model"], jev.ASTRA)
+        self.assertEqual(Edge.payloads[-1]["input"], history)
+        self.assertEqual(self.records[-1]["gate"], "astra_policy")
+        self.assertEqual(self.records[-1]["base_tier"], jev.LUNA)
 
     def test_compaction_gets_a_new_decision_and_full_handoff(self):
         opening = [message("user", "refactor the router tests"),

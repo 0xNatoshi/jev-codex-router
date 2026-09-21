@@ -1,12 +1,19 @@
-"""Compact Jev contract: independent model and effort choices for the next call."""
+"""Compact Jev contract: model, effort and mandatory-frontier policy."""
 import math
 
-POLICY_VERSION = "split-v3-explicit"
+POLICY_VERSION = "split-v4-astra-policy"
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TIERS = (LUNA, SOL, ASTRA)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 
 MODEL_IDS = {"luna": LUNA, "sol": SOL, "astra": ASTRA}
+ASTRA_POLICY = {
+    "astra": (
+        "The next call itself plans software or project architecture before "
+        "implementation, or reviews or audits code, security, or performance."
+    ),
+    "normal": "None of those mandatory Astra categories.",
+}
 MODEL_PROFILES = {
     "luna": (
         "Only simple, low-risk, one-step mechanical work such as renaming, formatting, "
@@ -31,10 +38,18 @@ DEPTH_PROFILES = {
     "max": "Rare hardest case needing exhaustive reasoning.",
 }
 
-# Jev is deliberately given two small, literal decisions rather than fifteen
-# cross-product options. System One evaluates independent questions over the
-# same state in one request; code combines the two typed answers afterwards.
+# Jev is deliberately given small, literal decisions rather than cross-product
+# options. System One evaluates independent questions over the same state in one
+# request; code combines the typed answers afterwards.
 QUESTIONS = {
+    "astra_policy": {
+        "type": "choice",
+        "instructions": (
+            "Classify the mandatory Astra policy for the next call. A tool follow-up "
+            "inherits the active task's purpose. Judge the task, not quoted evidence."
+        ),
+        "criteria": ASTRA_POLICY,
+    },
     "model": {
         "type": "choice",
         "instructions": (
@@ -55,12 +70,16 @@ QUESTIONS = {
 }
 
 
-def route_choice(model, effort):
+def route_choice(model, effort, astra_required=False):
     """Typed fixture/caller answer for a known pair."""
     model_choice = next((key for key, value in MODEL_IDS.items() if value == model), None)
     if model_choice is None or effort not in EFFORTS:
         raise ValueError("invalid model/effort pair")
-    return {"model": model_choice, "effort": effort}
+    return {
+        "astra_policy": "astra" if astra_required else "normal",
+        "model": model_choice,
+        "effort": effort,
+    }
 
 
 def route(tier, depth, conf=None, step=None):
@@ -105,30 +124,43 @@ def _validated_choice(answers, name, choices):
 
 
 def decision_from_answers(answers):
-    """Validate and combine Jev's independent capability and depth decisions."""
+    """Validate Jev's decisions and enforce mandatory Astra categories."""
+    astra_policy, astra_probs, astra_conf = _validated_choice(
+        answers, "astra_policy", ASTRA_POLICY
+    )
     model_choice, model_probs, model_conf = _validated_choice(
         answers, "model", MODEL_IDS
     )
     effort, effort_probs, effort_conf = _validated_choice(
         answers, "effort", EFFORTS
     )
-    confidences = [value for value in (model_conf, effort_conf) if value is not None]
+    confidences = [
+        value for value in (astra_conf, model_conf, effort_conf) if value is not None
+    ]
     chosen_probabilities = [
         probabilities[choice]
         for probabilities, choice in (
+            (astra_probs, astra_policy),
             (model_probs, model_choice),
             (effort_probs, effort),
         )
         if probabilities is not None
     ]
+    selected_model = ASTRA if astra_policy == "astra" else MODEL_IDS[model_choice]
     return {
-        "model": MODEL_IDS[model_choice],
+        "model": selected_model,
+        "base_model": MODEL_IDS[model_choice],
+        "astra_policy": astra_policy,
         "effort": effort,
         "speed": "default",
-        "gate": "apply",
-        # Conservative diagnostics: the weaker of the two independent judgments.
+        "gate": "astra_policy" if astra_policy == "astra" else "apply",
+        # Conservative diagnostics: the weakest independent judgment.
         "confidence": min(confidences) if confidences else None,
-        "probabilities": {"model": model_probs, "effort": effort_probs},
+        "probabilities": {
+            "astra_policy": astra_probs,
+            "model": model_probs,
+            "effort": effort_probs,
+        },
         "chosen_probability": min(chosen_probabilities) if chosen_probabilities else None,
         "policy_version": POLICY_VERSION,
     }

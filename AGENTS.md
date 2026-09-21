@@ -209,10 +209,13 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v3-explicit`: one System One request asks two
-  independent Choice questions with explicit criteria — capability tier and
-  reasoning effort — for every model call, including tool continuations and
-  post-compaction calls. Provider retries inside one call keep that decision.
+- The current policy is `split-v4-astra-policy`: one System One request asks
+  three independent Choice questions with explicit criteria — mandatory Astra
+  policy, capability tier and reasoning effort — for every model call, including
+  tool continuations and post-compaction calls. Pre-project software/project
+  architecture and code, security or performance review force Astra while
+  preserving Jev's independently selected effort. Provider retries inside one
+  call keep that decision.
   The selected model always receives the complete canonical request and the
   original cache controls; Jev receives only the bounded decision dossier. A
   context-dependent short ask also gets one bounded active-task summary. Cache
@@ -220,8 +223,9 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   reuse is measured per `(hashed session, model)`, while every model swap still
   gets the full replay. All tiers use adaptive effort and standard speed; never
   force Luna to max or enable Fast mode.
-- No scenario overrides, target model shares, or confidence threshold may
-  replace a valid Jev choice with Sol, Luna or Astra. Confidence is diagnostic.
+- Apart from the explicit mandatory-Astra policy, no scenario override, target
+  model share, or confidence threshold may replace a valid Jev choice. Confidence
+  is diagnostic. Terra is not a live candidate in this policy.
 - Provider/schema failures remain distinct: Astra at medium, logged as a
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run

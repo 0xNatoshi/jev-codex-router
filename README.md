@@ -57,20 +57,26 @@ Codex ──▶ Codex Router (:4202)
 
 ## Routing policy
 
-The shared contract in `server/routing_policy.py` gives Jev two independent
-Choice questions in one request: the least expensive sufficient capability tier
-(Luna, Sol or Astra), and the minimum sufficient thinking depth (low through
-max). Explicit criteria are cheaper and more reliable here than 15 terse
-cross-product labels. Code validates and combines the two typed answers. Every
-pair uses standard speed, overriding an incoming Fast setting, including retries
-and bypass modes.
+The shared contract in `server/routing_policy.py` gives Jev three independent
+Choice questions in one request: whether the next call falls under the mandatory
+Astra policy, the least expensive sufficient capability tier (Luna, Sol or
+Astra), and the minimum sufficient thinking depth (low through max). The first
+choice covers pre-project software/project architecture and code, security or
+performance review. Code forces Astra when that policy choice is positive,
+regardless of the ordinary tier choice; the independently selected effort is
+preserved. Every pair uses standard speed, overriding an incoming Fast setting,
+including retries and bypass modes.
 
-There is no preferred model, target distribution, keyword-to-model rule,
-low-confidence fallback to Sol, mechanical-step exception, or compaction pin.
-A valid pair of decisions is applied unchanged even when options are close.
-Jev's conservative combined confidence and both choice distributions are logged
-separately; neither is a measured probability that the selected model will
-successfully finish the task.
+There is no target distribution, keyword-to-model rule, low-confidence fallback
+to Sol, mechanical-step exception, or compaction pin. Outside the explicit
+mandatory-Astra policy, a valid pair of tier and effort decisions is applied
+unchanged even when options are close. Jev's conservative combined confidence
+and all three choice distributions are logged separately; neither is a measured
+probability that the selected model will successfully finish the task.
+
+Terra is intentionally not a routing candidate in this policy. Its historical
+pricing and display support remain in reporting, but live native selection is the
+Luna/Sol/Astra triptych.
 
 The model descriptions are capability priors, not calibrated success rates.
 The policy must be evaluated on completed tasks, corrections, tokens and quota,

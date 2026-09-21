@@ -5,6 +5,7 @@ import unittest
 
 import jev_server as jev
 from routing_policy import (
+    ASTRA_POLICY,
     DEPTH_PROFILES,
     MODEL_IDS,
     QUESTIONS,
@@ -16,9 +17,10 @@ from routing_policy import (
 class SplitPolicy(unittest.TestCase):
     def test_the_repeated_contract_stays_compact_and_explicit(self):
         encoded = json.dumps(QUESTIONS, separators=(",", ":"))
-        self.assertLessEqual(len(encoded), 1400)
+        self.assertLessEqual(len(encoded), 1900)
         self.assertNotIn('"luna":"luna"', encoded)
         self.assertIn("Intermittent or concurrency failures", encoded)
+        self.assertIn("reviews or audits code, security, or performance", encoded)
 
     def test_every_valid_pair_survives_confidence_and_step_metadata(self):
         for model in jev.TIERS:
@@ -43,14 +45,23 @@ class SplitPolicy(unittest.TestCase):
 
     @staticmethod
     def distribution(choices, selected):
+        if len(choices) == 2:
+            return {choice: 0.7 if choice == selected else 0.3 for choice in choices}
         remainder = 0.6 / (len(choices) - 1)
         result = {choice: remainder for choice in choices}
         result[selected] = 0.4
         return result
 
-    def answer(self, model=jev.LUNA, effort="low"):
-        pair = route_choice(model, effort)
+    def answer(self, model=jev.LUNA, effort="low", astra_required=False):
+        pair = route_choice(model, effort, astra_required)
         return {
+            "astra_policy": {
+                "choice": pair["astra_policy"],
+                "confidence": 0.21,
+                "probabilities": self.distribution(
+                    ASTRA_POLICY, pair["astra_policy"]
+                ),
+            },
             "model": {
                 "choice": pair["model"],
                 "confidence": 0.21,
@@ -68,10 +79,22 @@ class SplitPolicy(unittest.TestCase):
             for effort in jev.EFFORTS:
                 result = decision_from_answers(self.answer(model, effort))
                 self.assertEqual(result["model"], model)
+                self.assertEqual(result["base_model"], model)
+                self.assertEqual(result["astra_policy"], "normal")
                 self.assertEqual(result["effort"], effort)
                 self.assertEqual(result["confidence"], 0.12)
                 self.assertEqual(result["chosen_probability"], 0.4)
                 self.assertEqual(result["gate"], "apply")
+
+    def test_mandatory_categories_override_the_base_model_with_astra(self):
+        result = decision_from_answers(
+            self.answer(jev.LUNA, "high", astra_required=True)
+        )
+        self.assertEqual(result["model"], jev.ASTRA)
+        self.assertEqual(result["base_model"], jev.LUNA)
+        self.assertEqual(result["astra_policy"], "astra")
+        self.assertEqual(result["effort"], "high")
+        self.assertEqual(result["gate"], "astra_policy")
 
     def test_invalid_choices_cannot_become_an_unrequested_pair(self):
         invalid = (
@@ -87,7 +110,11 @@ class SplitPolicy(unittest.TestCase):
                 decision_from_answers(answer)
 
     def test_invalid_distributions_are_rejected_for_each_question(self):
-        for question, choices in (("model", MODEL_IDS), ("effort", DEPTH_PROFILES)):
+        for question, choices in (
+            ("astra_policy", ASTRA_POLICY),
+            ("model", MODEL_IDS),
+            ("effort", DEPTH_PROFILES),
+        ):
             selected = self.answer()[question]["choice"]
             for value in (-0.5, float("nan"), float("inf"), True, "0.2"):
                 answer = copy.deepcopy(self.answer())
@@ -112,6 +139,7 @@ class SplitPolicy(unittest.TestCase):
     def test_missing_or_invalid_confidence_is_diagnostic_only(self):
         for confidence in (None, True, float("nan"), -1, 2, "high"):
             answer = self.answer()
+            answer["astra_policy"]["confidence"] = confidence
             answer["model"]["confidence"] = confidence
             answer["effort"]["confidence"] = confidence
             result = decision_from_answers(answer)

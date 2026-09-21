@@ -7,10 +7,12 @@ and a thinking depth, applies the routing policy, then relays to the Codex
 Router's local caller edge (native session sharing enabled) — with no format
 conversion: Responses in, Responses out, SSE relayed verbatim.
 
-Routing policy: Jev independently chooses one capability tier and one thinking
-depth for every call, in a single typed request. Code combines those two answers.
-Every pair uses standard speed. Confidence is logged without changing the chosen
-model. There are no keyword/scenario overrides or target model proportions.
+Routing policy: Jev independently classifies the mandatory-Astra policy, chooses
+one capability tier and one thinking depth for every call, in a single typed
+request. Code combines those answers and forces Astra for pre-project
+architecture or code/security/performance review. Every pair uses standard
+speed. Confidence is logged without changing other valid choices. There are no
+keyword overrides or target model proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
 Per-call routing (v5): every model call is judged independently, so a tool loop
@@ -1175,7 +1177,8 @@ class Handler(BaseHTTPRequestHandler):
                                  and isinstance(v, int) and not isinstance(v, bool) and v >= 0}
                     tier, depth, conf = (decision["model"], decision["effort"],
                                          decision["confidence"])
-                    model, effort, speed, gate = route(tier, depth)
+                    model, effort, speed, _ = route(tier, depth)
+                    gate = decision["gate"]
                 except Exception as exc:
                     model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
                 jev_ms = int((time.time() - jt0) * 1000)
@@ -1276,6 +1279,8 @@ class Handler(BaseHTTPRequestHandler):
             "policy_version": POLICY_VERSION,
             "route_probabilities": decision["probabilities"] if decision else None,
             "chosen_probability": decision["chosen_probability"] if decision else None,
+            "astra_policy": decision["astra_policy"] if decision else None,
+            "base_tier": decision["base_model"] if decision else None,
             "jev_usage": jev_usage,
             "attempts": self._attempts,
             "gate": gate,

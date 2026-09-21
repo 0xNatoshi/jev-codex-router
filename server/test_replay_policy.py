@@ -43,6 +43,7 @@ class ReplayPolicy(unittest.TestCase):
                  mock.patch.object(backtest, "RESULT_PATH", str(result)), \
                  mock.patch.object(backtest.poc, "load_key", return_value="fixture"), \
                  mock.patch.object(backtest.poc, "post_json", return_value={"answers": {
+                     "astra_policy": {"choice": pair["astra_policy"], "confidence": 0.1},
                      "model": {"choice": pair["model"], "confidence": 0.1},
                      "effort": {"choice": pair["effort"], "confidence": 0.1},
                  }}) as judge, \
