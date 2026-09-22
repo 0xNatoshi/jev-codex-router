@@ -87,7 +87,10 @@ import {
   deepSeekResponsesInput,
   usesDeepSeekResponses,
 } from "./deepseek-responses.mjs";
-import { exactRouteProbeRequested } from "./exact-route-probe.mjs";
+import {
+  canonicalReplayRequested,
+  exactRouteProbeRequested,
+} from "./exact-route-probe.mjs";
 import {
   MERGED_CATALOG_PATH,
   NATIVE_CATALOG_PATH,
@@ -2964,7 +2967,8 @@ async function summarize(request, payload, route, signal, { allowFailover = true
   // The summarizer may select source IDs, but only this deterministic pass can
   // decide which source types and machine outcomes enter a kcr2 checkpoint.
   const prepared = prepareCompaction(normalized);
-  const agingEnabled = toolResultAgingEnabled();
+  const canonicalReplay = canonicalReplayRequested(request.headers);
+  const agingEnabled = toolResultAgingEnabled() && !canonicalReplay;
   const aged = ageToolResults(normalized, {
     enabled: agingEnabled,
     // The client has already decided this conversation needs compaction. Dense
@@ -3828,8 +3832,9 @@ async function prepareRoutedRequest({
   route,
   normalizedInput,
   agingEnabled,
+  canonicalReplay = false,
 }) {
-  const canonicalReplay = requiresCanonicalReplay(route);
+  canonicalReplay = canonicalReplay || requiresCanonicalReplay(route);
   const aged = ageToolResults(normalizedInput, {
     enabled: agingEnabled && !canonicalReplay,
   });
@@ -3968,6 +3973,7 @@ async function attemptModelFailover({
   agingEnabled,
   searchContract,
   progress,
+  canonicalReplay,
 }) {
   const settings = readFailoverSettings();
   if (!settings.enabled) return undefined;
@@ -4010,6 +4016,7 @@ async function attemptModelFailover({
         route: model,
         normalizedInput,
         agingEnabled,
+        canonicalReplay,
       });
       if (!routedRequestFits(model, built.body)) {
         logFailover(route, model, verdict.reason, status, "context-too-small");
@@ -4150,6 +4157,7 @@ async function handleResponses(request, response, requestUrl) {
   try {
     if (!requireCodexTransport(request, response)) return;
     const exactRouteProbe = exactRouteProbeRequested(request.headers);
+    const canonicalReplay = canonicalReplayRequested(request.headers);
     const encoded = await readRequestBody(request, { signal: controller.signal });
     const body = await decodeBody(encoded, request.headers["content-encoding"]);
     let payload = await parseBodyAsync(body);
@@ -4270,7 +4278,7 @@ async function handleResponses(request, response, requestUrl) {
         route,
         controller.signal,
         compactV2,
-        { allowFailover: !exactRouteProbe },
+        { allowFailover: !exactRouteProbe, canonicalReplay },
       );
       const compacted = compaction.route || route;
       recordCompactionUsage(compaction, route, startedAt, diagnostics);
@@ -4356,6 +4364,7 @@ async function handleResponses(request, response, requestUrl) {
         route,
         normalizedInput,
         agingEnabled,
+        canonicalReplay,
       });
       toolResultAging = built.toolResultAging;
       conversationWindow = built.conversationWindow;
@@ -4395,6 +4404,7 @@ async function handleResponses(request, response, requestUrl) {
               route: next.model,
               normalizedInput,
               agingEnabled,
+              canonicalReplay,
             });
           } catch (error) {
             const compatibilityCode = candidateBuildCompatibilityCode(error);
@@ -4462,12 +4472,15 @@ async function handleResponses(request, response, requestUrl) {
         // true content rather than a receipt.
         if (!compactV1 && !compactV2) {
           const aged = ageToolResults(native.input, {
-            enabled: nativeToolResultAgingEnabled(),
+            enabled: nativeToolResultAgingEnabled() && !canonicalReplay,
           });
           const windowed = windowConversation(aged.input, {
             // Native turns are exempt by default: windowing them is what made
             // the upstream model fall back to its text tool-call syntax.
-            enabled: conversationWindowEnabled() && nativeConversationWindowEnabled(),
+            enabled:
+              conversationWindowEnabled() &&
+              nativeConversationWindowEnabled() &&
+              !canonicalReplay,
             tailBytes: conversationWindowTailBytes(),
           });
           native.input = windowed.input;
@@ -4609,6 +4622,7 @@ async function handleResponses(request, response, requestUrl) {
           normalizedInput,
           agingEnabled,
           searchContract,
+          canonicalReplay,
         });
         if (moved) {
           // The attempt that failed is still a turn that happened and still

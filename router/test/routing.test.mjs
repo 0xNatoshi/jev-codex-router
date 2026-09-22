@@ -9636,6 +9636,67 @@ test("native turns keep their whole conversation unless the native window is opt
   }
 });
 
+test("an internal canonical replay bypasses opted-in native context reduction", async () => {
+  const forwarded = [];
+  const upstreamHeaders = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamHeaders.push(request.headers);
+    forwarded.push(await bodyJson(request));
+    json(response, 200, {
+      output: [{ type: "message", role: "assistant", content: [
+        { type: "output_text", text: "ok" },
+      ] }],
+    });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-canonical-reentry-"));
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(
+    path.join(stateDir, "tool-result-aging.json"),
+    `${JSON.stringify({ version: 1, enabled: true, nativeEnabled: true })}\n`,
+    { mode: 0o600 },
+  );
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${upstream.port}/backend-api/codex`,
+    CODEX_ROUTER_CONVERSATION_WINDOW: "1",
+    CODEX_ROUTER_NATIVE_CONVERSATION_WINDOW: "1",
+    CODEX_ROUTER_CONVERSATION_WINDOW_KB: "1",
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  const input = [
+    { type: "message", role: "system", content: "Operator rules." },
+    { type: "message", role: "user", content: "Original task." },
+    { type: "function_call", call_id: "old", name: "inspect", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: "x".repeat(40_000) },
+    { type: "message", role: "assistant", content: "Evidence consumed." },
+    { type: "message", role: "user", content: "Continue." },
+  ];
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+        "x-codex-router-canonical-replay": "1",
+      },
+      body: JSON.stringify({ model: "gpt-5.6-sol", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.deepEqual(forwarded.at(-1).input, input);
+    assert.equal(upstreamHeaders.at(-1)["x-codex-router-canonical-replay"], undefined);
+    const [event] = await waitForUsageEvents(stateDir, 1, router);
+    assert.equal(event.toolResultsAged ?? 0, 0);
+    assert.equal(event.conversationWindowItemsDropped ?? 0, 0);
+  } finally {
+    await stopChild(router);
+    await closeServer(upstream.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("RTK shaping is reserved for routed compaction and ordinary turns keep newest results exact", async () => {
   const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {

@@ -2063,6 +2063,11 @@ class Handler(BaseHTTPRequestHandler):
         markerer = None
         try:
             headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+            # The selected model must receive this exact canonical replay even
+            # when the parent router's global aging/windowing knobs are enabled.
+            # The local caller capability authenticates this internal contract;
+            # the parent consumes the marker and never forwards it upstream.
+            headers["x-codex-router-canonical-replay"] = "1"
             if exact_route:
                 # This request is already one hop of Jev's bounded recovery
                 # plan. Disable the parent router's own cross-model failover so

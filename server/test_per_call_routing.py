@@ -77,6 +77,7 @@ class Edge(BaseHTTPRequestHandler):
     """Local caller edge fixture: records the exact request sent to the model."""
 
     payloads = []
+    headers_seen = []
 
     def log_message(self, *args):
         pass
@@ -85,6 +86,7 @@ class Edge(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         type(self).payloads.append(body)
+        type(self).headers_seen.append(dict(self.headers))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(COMPLETED)))
@@ -186,6 +188,7 @@ class PerCallEndToEnd(unittest.TestCase):
     def setUp(self):
         self.enterContext(mock.patch.object(jev, "local_secret", return_value="fixture-local"))
         Edge.payloads = []
+        Edge.headers_seen = []
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
                      "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
@@ -448,6 +451,9 @@ class PerCallEndToEnd(unittest.TestCase):
         forwarded = Edge.payloads[-1]
         self.assertEqual(forwarded["input"], sent["input"])
         self.assertEqual(forwarded["instructions"], sent["instructions"])
+        self.assertEqual(
+            Edge.headers_seen[-1].get("x-codex-router-canonical-replay"), "1"
+        )
         self.assertEqual(forwarded["tools"], sent["tools"])
         self.assertEqual(decision_state["task"], "Continue from the existing evidence.")
         self.assertEqual(
