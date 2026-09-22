@@ -356,46 +356,6 @@ def routing_efficiency(entries):
     }
 
 
-def experiment_comparison(entries):
-    """Observed routed-vs-all-Sol cohort metrics; no equal-quality claim."""
-    cohorts = {}
-    for name in ("routed", "all_sol"):
-        selected = [
-            entry for entry in entries
-            if entry.get("experiment") == name
-            and entry.get("cache_key_present") is not False
-        ]
-        if not selected:
-            continue
-        usage = measured_usage(selected)
-        cache = prompt_cache_usage(selected)
-        efficiency = routing_efficiency(selected)
-        success = sum(1 for entry in selected if entry.get("status") == 200)
-        cohorts[name] = {
-            "turns": len(selected),
-            "sessions": len({
-                entry.get("cache_scope") for entry in selected if entry.get("cache_scope")
-            }),
-            "success_pct": round(100.0 * success / len(selected), 1),
-            "routed_credits": usage["routed_credits"],
-            "priced_attempts": usage["priced_attempts"],
-            "unknown_attempts": usage["unknown_attempts"],
-            "cached_share_pct": cache["cached_share_pct"],
-            "route_switches": cache["route_switches"],
-            "jev_decisions": efficiency["jev_decisions"],
-            "lease_hits": efficiency["lease_hits"],
-            "jev_input_tokens": efficiency["observed_jev_input_tokens"],
-        }
-    return {
-        "active": bool(cohorts),
-        "cohorts": cohorts,
-        "note": (
-            "Stable hashed-session cohorts; observed traffic only. Compare quality and "
-            "completion outcomes before interpreting cost."
-        ),
-    }
-
-
 def price_key(model):
     """The price row a served model is costed with, or None when unpriced.
 
@@ -633,7 +593,6 @@ def summarize(entries, days, stats, log_path, backtest_path=None, policy=None):
         "measured_usage": measured_usage(entries),
         "prompt_cache": prompt_cache_usage(entries),
         "routing_efficiency": routing_efficiency(entries),
-        "experiment": experiment_comparison(entries),
         "policy_versions": {
             version: sum(1 for entry in entries if entry.get("policy_version") == version)
             for version in sorted({
@@ -787,23 +746,6 @@ def render_text(rep):
               f"{efficiency['lease_hits']} · avoided "
               f"{fmt(efficiency['decision_calls_avoided_pct'])}% of eligible decisions · "
               f"{fmt(efficiency['observed_jev_input_tokens'])} observed Jev input tokens"]
-    experiment = rep["experiment"]
-    if experiment["active"]:
-        cohort_rows = []
-        for name, row in experiment["cohorts"].items():
-            cohort_rows.append([
-                name, row["turns"], row["sessions"], f"{row['success_pct']}%",
-                row["priced_attempts"], row["routed_credits"],
-                f"{fmt(row['cached_share_pct'])}%", row["route_switches"],
-                row["jev_input_tokens"],
-            ])
-        lines += ["", "Stable session experiment — routed vs all-Sol",
-                  table(
-                      ["cohort", "turns", "sessions", "success", "priced", "credits",
-                       "cached", "swaps", "Jev input"],
-                      cohort_rows,
-                  ),
-                  f"  {experiment['note']}"]
     native = rep["native_cost"]
     lines += ["", "Native Codex calls only — fixed-volume API-rate proxy, not measured quota",
               f"  {native['turns']} calls · {fmt(native['routed_units'])} units · "

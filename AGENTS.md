@@ -123,11 +123,6 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   block in the Codex thread.
 - **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
   are logged (`would` field) while every call is still served by astra.
-- **All-Sol measurement cohort**: write
-  `{"percent":10,"until":"<ISO-8601>"}` to
-  `~/.codex/codex-router/jev-router.sol-baseline.json`. Assignment is stable by
-  hashed prompt-cache scope; mandatory Astra, shadow and Codex-dry semantics
-  still win. Remove the file to stop the experiment.
 - **Debug capture** (bounded): `touch ~/.codex/codex-router/jev-router.debug`
   → request shapes in `jev-router-debug.jsonl` and transport counters in
   `jev-router-debug-stream.log`. Remove the file to stop.
@@ -191,8 +186,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   reuse is measured per `(hashed session, model)`, while every model swap still
   gets the full replay. All tiers use adaptive effort and standard speed; never
   force Luna to max or enable Fast mode.
-- Apart from the explicit mandatory-Astra policy and an explicitly enabled,
-  stable hashed-session all-Sol measurement cohort, no scenario override, target
+- Apart from the explicit mandatory-Astra policy, no scenario override, target
   model share, or confidence threshold may replace a valid Jev choice. Confidence
   is diagnostic. The native ladder is Luna → Terra → Sol → Astra. Terra covers
   routine bounded implementation with clear requirements; Sol covers complex
@@ -208,8 +202,8 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   technical fallback. Kill switch and exhausted-native-quota handling still apply.
 - Jev usage and upstream per-attempt tokens are logged when available. Run
   `python3 server/report_routing.py --days 7 --policy current` for native-only
-  credit estimates, lease savings, the routed/all-Sol cohort comparison and
-  observed prompt-cache reads/writes by model/session; unknown usage remains
-  unknown and reasoning tokens are not counted twice.
+  credit estimates, lease savings and observed prompt-cache reads/writes by
+  model/session; unknown usage remains unknown and reasoning tokens are not
+  counted twice.
 - `BACKTEST.md` documents the old policy's fixed-token simulation. It is not a
   measurement of current quota savings or result quality.

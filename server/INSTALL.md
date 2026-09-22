@@ -26,7 +26,6 @@ No OpenAI Platform API key is needed for this local ChatGPT-session relay.
 |---|---|
 | Decision log | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
 | Current-policy cost/cache report | `python3 server/report_routing.py --days 7 --policy current` |
-| Stable all-Sol cohort | create `~/.codex/codex-router/jev-router.sol-baseline.json` with `{"percent":10,"until":"<ISO-8601>"}` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` / `rm` to re-enable |
 | Install the launchd service | `bash server/install-service.sh` (in your own Terminal) |
 | Service status | `launchctl print gui/$(id -u)/com.thibaultsaintjean.jev-router` |

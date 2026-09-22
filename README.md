@@ -223,14 +223,9 @@ There is no cross-model KV-cache handoff, because those tensors belong to the
 weights of the model that produced them
 ([OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)).
 The report hashes session ids before logging them and shows actual
-cache reads and writes. An optional state file
-`~/.codex/codex-router/jev-router.sol-baseline.json` can assign a stable
-percentage of hashed sessions to an all-Sol baseline. Mandatory-Astra decisions
-still win. Use
-`python3 server/report_routing.py --days 7 --policy current` to compare observed
-routed and all-Sol cohorts, Jev input, leases, swaps, cache reuse and rate-card
-credit estimates. The comparison is observational until both cohorts have enough
-completed tasks and quality outcomes.
+cache reads and writes. Use
+`python3 server/report_routing.py --days 7 --policy current` to inspect Jev
+input, leases, swaps, cache reuse and rate-card credit estimates.
 
 Each model still owns an independent cache. Returning to a previously used model
 can reuse its prefix, but observed switches on 21 September 2026 reused only
@@ -358,7 +353,6 @@ per-call attribution are excluded from the historical cost baseline.
 | See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
 | Show the model and thinking above every assistant message | `touch ~/.codex/codex-router/jev-router.signature` — a leading `**🧠 sol · thinking: high**` appears from the first text fragment, including commentary and unphased replies; remove the file to disable |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
-| 10% stable all-Sol measurement cohort | create `~/.codex/codex-router/jev-router.sol-baseline.json` with `{"percent":10,"until":"<ISO-8601>"}`; remove it to stop |
 | Debug counters (no raw content) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
 | Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |

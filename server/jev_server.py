@@ -13,8 +13,7 @@ typed request. Code combines those answers and forces Astra for pre-project
 architecture, independent final code review or risk-focused review. Routine
 quality checkpoints use ordinary capability routing. Every pair uses standard
 speed. Confidence is logged without changing other valid choices. There are no
-keyword overrides or production target proportions; an explicit stable all-Sol
-measurement cohort is the sole experimental exception.
+keyword overrides or production target proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
 Measured routing (v10): every user turn, error, compaction and material tool-chain
@@ -83,7 +82,6 @@ ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
 """
 import codecs
-import datetime
 import hashlib
 import http.client
 import json
@@ -108,7 +106,6 @@ DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 # Opt-in route header on each assistant text message. Presentation metadata is
 # removed from replayed history, including legacy trailing signatures.
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
-SOL_BASELINE_PATH = os.path.join(STATE, "jev-router.sol-baseline.json")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
@@ -910,39 +907,6 @@ def remember_route_lease(scope, payload, step, decision, status, now=None):
         }
 
 
-def sol_baseline_config(now=None):
-    """Read the opt-in all-Sol experiment without caching mutable operations state."""
-    try:
-        with open(SOL_BASELINE_PATH, encoding="utf-8") as fh:
-            config = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    percent = config.get("percent")
-    if isinstance(percent, bool) or not isinstance(percent, (int, float)):
-        return None
-    percent = min(100.0, max(0.0, float(percent)))
-    until = config.get("until")
-    if until:
-        try:
-            expires = datetime.datetime.fromisoformat(str(until).replace("Z", "+00:00"))
-            current = datetime.datetime.now(expires.tzinfo) if now is None else now
-            if isinstance(current, (int, float)):
-                current = datetime.datetime.fromtimestamp(current, expires.tzinfo)
-            if current >= expires:
-                return None
-        except (TypeError, ValueError):
-            return None
-    return {"percent": percent, "until": until}
-
-
-def sol_baseline_member(scope, config):
-    """Stable hashed-session assignment, with no raw session identifier."""
-    if not config or config["percent"] <= 0:
-        return False
-    bucket = int(hashlib.sha256(f"sol-baseline:{scope}".encode()).hexdigest()[:8], 16)
-    return bucket % 10_000 < int(config["percent"] * 100)
-
-
 def route_label(model):
     """(short name, glyph) of a routed call — the vocabulary of both tags."""
     short, glyph = ROUTE_GLYPHS.get(model, (None, None))
@@ -1632,21 +1596,7 @@ class Handler(BaseHTTPRequestHandler):
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
                 decision_source = "technical_fallback"
 
-        semantic_model = model
-        experiment_config = sol_baseline_config()
-        experiment = None
         shadow_enabled = os.path.exists(SHADOW_PATH)
-        experiment_scope = (
-            isinstance(payload.get("prompt_cache_key"), str)
-            and bool(payload["prompt_cache_key"].strip())
-        )
-        if decision and experiment_config and experiment_scope and not shadow_enabled:
-            if sol_baseline_member(scope, experiment_config):
-                experiment = "all_sol"
-                if gate != "astra_policy" and model in TIERS:
-                    model = SOL
-            else:
-                experiment = "routed"
 
         would = None
         if shadow_enabled:
@@ -1657,8 +1607,6 @@ class Handler(BaseHTTPRequestHandler):
         # observed quota failure) the native model ladder is replaced — GLM for frontier
         # steps, deepseek for the rest. Otherwise luna/terra/sol/astra run untouched.
         dry_reason = native_dry()
-        if dry_reason:
-            experiment = None
         native_model = model
         if dry_reason and model in TIERS:
             model, effort = dry_target(native_model, effort)
@@ -1775,11 +1723,6 @@ class Handler(BaseHTTPRequestHandler):
             "effort": effort,
             "speed": speed,
             "native": native_model,
-            "semantic_model": semantic_model,
-            "experiment": experiment,
-            "experiment_percent": (
-                experiment_config.get("percent") if experiment_config else None
-            ),
             "dry": dry_reason,
             "routing_scope": decision.get("lease") if decision else "call",
             "effort_transport": effort_transport,

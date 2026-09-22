@@ -100,7 +100,7 @@ class TandemHandoff(unittest.TestCase):
         # log, or depend on the user's current fallback model configuration.
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
-                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH", "SOL_BASELINE_PATH"):
+                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
             self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
         self.enterContext(mock.patch.object(jev, "STATE", tmp))
         self.enterContext(mock.patch.object(jev, "GO_STANDARD", "fixture/standard"))
