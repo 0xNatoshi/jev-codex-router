@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findCodexBinary } from "./codex-binary.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
+import { EXACT_ROUTE_PROBE_HEADER } from "./exact-route-probe.mjs";
+import { CONFIG_PATH } from "./paths.mjs";
+import { scanTomlDocument, tomlStringValue } from "./toml-structure.mjs";
 
 // Whether a local model can drive Codex is not predictable from its size, its
 // tool flag, or a hand-written probe. Every approximation tried here got it
@@ -73,6 +76,17 @@ export function checkAgentCapability(slug, options = {}) {
   };
 }
 
+function activeModelProvider(configPath = CONFIG_PATH) {
+  try {
+    const document = scanTomlDocument(readFileSync(configPath, "utf8"), {
+      rootOnly: true,
+    });
+    return tomlStringValue(document, [], "model_provider") || "openai";
+  } catch {
+    return undefined;
+  }
+}
+
 function runAgentCheckOnce(
   slug,
   {
@@ -81,6 +95,7 @@ function runAgentCheckOnce(
     timeoutMs = 420_000,
     catalogSlugs,
     platform = process.platform,
+    providerId = activeModelProvider(),
   } = {},
 ) {
   if (!codex) return { slug, ok: false, error: "No Codex binary found." };
@@ -93,6 +108,15 @@ function runAgentCheckOnce(
       ok: true,
       verdict: "not-published",
       detail: "not offered to Codex, so nothing to measure",
+      agentCapable: false,
+    };
+  }
+  if (!providerId) {
+    return {
+      slug,
+      ok: true,
+      verdict: "unattested-route",
+      detail: "active Codex provider could not be determined",
       agentCapable: false,
     };
   }
@@ -115,6 +139,10 @@ function runAgentCheckOnce(
         "read-only",
         "--model",
         slug,
+        "--config",
+        `model_providers.${JSON.stringify(providerId)}.http_headers.${
+          JSON.stringify(EXACT_ROUTE_PROBE_HEADER)
+        }="1"`,
         "--skip-git-repo-check",
         CHECK_PROMPT,
       ],

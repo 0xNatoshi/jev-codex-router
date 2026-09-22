@@ -18,6 +18,7 @@ test("agent capability checks override user config with an ephemeral read-only s
     codex: "/opt/codex",
     spawn,
     catalogSlugs: new Set([slug]),
+    providerId: "codex-router",
   });
 
   assert.equal(result.verdict, "agent");
@@ -29,6 +30,11 @@ test("agent capability checks override user config with an ephemeral read-only s
     "--model",
   ]);
   assert.equal(invocation.args[5], slug);
+  const override = invocation.args[invocation.args.indexOf("--config") + 1];
+  assert.equal(
+    override,
+    'model_providers."codex-router".http_headers."x-codex-router-exact-route"="1"',
+  );
   assert.ok(invocation.args.includes("--skip-git-repo-check"));
 });
 
@@ -51,6 +57,7 @@ test("the proof run reaches Codex through an npm batch shim on Windows", () => {
     platform: "win32",
     spawn,
     catalogSlugs: new Set([slug]),
+    providerId: "codex-router",
   });
 
   assert.equal(result.agentCapable, true);
@@ -62,4 +69,23 @@ test("the proof run reaches Codex through an npm batch shim on Windows", () => {
   assert.ok(line.includes("codex.cmd"), line);
   // One argument, not one per word.
   assert.ok(line.includes("list^ the^ files"), line);
+});
+
+test("agent qualification fails closed when the serving provider is unknown", () => {
+  let invoked = false;
+  const slug = "local/test-model";
+  const result = checkAgentCapability(slug, {
+    attempts: 1,
+    codex: "/opt/codex",
+    spawn: () => {
+      invoked = true;
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    catalogSlugs: new Set([slug]),
+    providerId: null,
+  });
+
+  assert.equal(invoked, false);
+  assert.equal(result.agentCapable, false);
+  assert.equal(result.verdict, "unattested-route");
 });
