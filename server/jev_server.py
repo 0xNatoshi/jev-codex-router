@@ -410,22 +410,71 @@ def _fallback_constraints(payload):
         encoded = json.dumps(payload, separators=(",", ":"))
     except (TypeError, ValueError):
         encoded = ""
-    text = encoded.lower()
-    tools = payload.get("tools") if isinstance(payload, dict) else None
-    tool_text = json.dumps(tools, separators=(",", ":")).lower() if tools else ""
-    has_search_history = '"web_search_call"' in text
-    needs_search = (
-        "web_search" in tool_text or "search_query" in tool_text or has_search_history
+
+    body = payload if isinstance(payload, dict) else {}
+    tools = body.get("tools")
+    tools = tools if isinstance(tools, list) else []
+    inp = body.get("input")
+
+    def has_typed_part(value, part_types):
+        if isinstance(value, list):
+            return any(has_typed_part(item, part_types) for item in value)
+        if not isinstance(value, dict):
+            return False
+        if value.get("type") in part_types:
+            return True
+        return any(
+            has_typed_part(value.get(key), part_types)
+            for key in ("content", "output")
+            if isinstance(value.get(key), (dict, list))
+        )
+
+    hosted_search_types = {"web_search", "web_search_preview"}
+    hosted_search = any(
+        isinstance(tool, dict) and tool.get("type") in hosted_search_types
+        for tool in tools
+    )
+    if isinstance(body.get("tool_choice"), dict):
+        hosted_search = (
+            body["tool_choice"].get("type") in hosted_search_types or hosted_search
+        )
+    include = body.get("include")
+    hosted_search = hosted_search or "web_search_options" in body or any(
+        isinstance(item, str) and item.startswith("web_search_call.")
+        for item in (include if isinstance(include, list) else [])
+    )
+
+    has_search_history = isinstance(inp, list) and any(
+        isinstance(item, dict) and item.get("type") == "web_search_call"
+        for item in inp
+    )
+
+    multi_agent_names = {
+        "spawn_agent",
+        "create_subagent",
+        "collaboration.spawn_agent",
+        "collaboration__spawn_agent",
+        "multi_agent_v1__spawn_agent",
+        "multi_agent_v2__spawn_agent",
+    }
+    has_multi_agent = any(
+        isinstance(tool, dict)
+        and (
+            tool.get("name") in multi_agent_names
+            or (
+                tool.get("namespace") == "collaboration"
+                and tool.get("name") == "spawn_agent"
+            )
+        )
+        for tool in tools
     )
     return {
         # Same conservative direction as the parent router: reject a fallback
         # that obviously cannot hold the canonical replay.
         "estimated_tokens": max(1, (len(encoded.encode("utf-8")) + 2) // 3),
-        "image": '"input_image"' in text or '"image_url"' in text,
-        "multi_agent_v2": any(name in tool_text for name in (
-            "spawn_agent", "collaboration.spawn_agent", "create_subagent",
-        )),
-        "search_mode": "hosted" if needs_search else None,
+        "image": has_typed_part(inp, {"input_image", "image_url"}),
+        "multi_agent_v2": has_multi_agent,
+        "search_mode": "hosted" if hosted_search else None,
         "search_history": has_search_history,
     }
 
