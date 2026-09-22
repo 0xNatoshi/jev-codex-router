@@ -186,7 +186,13 @@ test("browser opener settlement survives the Codex child exiting first", async (
         },
       });
       await openerCalled;
-      await childExited;
+      await Promise.race([
+        childExited,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("Codex child exit notification remained pending")),
+          700,
+        )),
+      ]);
       settleOpener();
       const bounded = Promise.race([
         opened,

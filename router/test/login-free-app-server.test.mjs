@@ -288,7 +288,12 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = server.address().port;
     server.on("upgrade", (request, socket, head) => {
-      upgrades.push({ headers: request.headers, url: request.url });
+      const upgrade = {
+        headers: request.headers,
+        url: request.url,
+        forwardedRequests: 0,
+      };
+      upgrades.push(upgrade);
       upgradedSockets.add(socket);
       socket.once("close", () => upgradedSockets.delete(socket));
       handleResponsesWebSocketUpgrade(request, socket, head, {
@@ -299,6 +304,10 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
             ? requestUrl.pathname
             : undefined,
         responsesUrl: `http://127.0.0.1:${port}/_codex-router/${CALLER_KEY}/v1/responses`,
+        fetchImpl: (...args) => {
+          upgrade.forwardedRequests += 1;
+          return fetch(...args);
+        },
       });
     });
     const env = cleanCredentialEnvironment({
@@ -349,9 +358,23 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
     const notifications = await runAppServerTurn(binary, env, model, expectedProvider);
     assert.equal(requests.length, 1);
     if (upgrades.length > 0) {
-      assert.equal(upgrades.length, 1);
-      assert.equal(upgrades[0].url, "/v1/responses");
-      assert.equal(upgrades[0].headers.authorization, `Bearer ${CALLER_KEY}`);
+      // Codex 0.155 may establish a second authenticated WebSocket after a
+      // provider-preserving config rewrite. It is an idle reconnect/prewarm:
+      // only one peer may relay response.create, and the HTTP fixture below
+      // must still observe exactly one billable model request.
+      assert.ok(upgrades.length <= 2, `unexpected WebSocket upgrade count: ${upgrades.length}`);
+      for (const upgrade of upgrades) {
+        assert.equal(upgrade.url, "/v1/responses");
+        assert.equal(upgrade.headers.authorization, `Bearer ${CALLER_KEY}`);
+      }
+      assert.equal(
+        upgrades.reduce((total, upgrade) => total + upgrade.forwardedRequests, 0),
+        1,
+      );
+      assert.equal(
+        upgrades.filter((upgrade) => upgrade.forwardedRequests > 0).length,
+        1,
+      );
       assert.equal(
         requests[0].url,
         `/_codex-router/${CALLER_KEY}/v1/responses`,
@@ -391,10 +414,17 @@ test("real Codex app-server completes signed-out turns through fallback and pres
     }
   });
   if (binaries.length === 0) {
+    if (process.env.CODEX_ROUTER_REQUIRE_REAL_CODEX === "1") {
+      assert.fail("CODEX_ROUTER_REQUIRE_REAL_CODEX=1 but no runnable Codex binary was found");
+    }
     t.skip("a real Codex binary is not installed");
     return;
   }
+  const expectedVersion = process.env.CODEX_ROUTER_EXPECT_CODEX_VERSION;
   for (const { binary, version } of binaries) {
+    if (expectedVersion) {
+      assert.equal(version, expectedVersion, `unexpected Codex contract version at ${binary}`);
+    }
     await t.test(`${version} root-openai fallback`, () => verifySignedOutTurn(binary));
     await t.test(`${version} preserved custom provider`, () =>
       verifySignedOutTurn(binary, { initialProvider: "custom" }));

@@ -295,6 +295,8 @@ AGENTS.md        Autonomous install and operations playbook
 
 Prerequisites: macOS with Codex desktop, Node.js 22.19+, Python 3.11+, and a
 TypeSafe API key for Jev. No separate Codex Router checkout is needed.
+See the [support and required CI matrix](docs/SUPPORT.md) for the pinned Codex
+contract, cross-platform fork coverage, and optional browser setup.
 
 **1. Give the server your TypeSafe key** — either
 `export TYPESAFE_API_KEY=...` in the service environment, or:
@@ -361,6 +363,10 @@ python3 poc/eval_routing.py            # offline fixture/dossier validation
 python3 poc/eval_routing.py --live     # optional paid Jev-only calibration
 python3 server/smoke.py               # small end-to-end model call; checks running policy
 ```
+
+The real Codex integration lane is fail-closed: it cannot pass by skipping a
+missing CLI binary. See [docs/SUPPORT.md](docs/SUPPORT.md) for required runtime
+versions and the full CI matrix.
 
 Replay tools share the live dossier builder but remain user-turn simulations,
 not a reconstruction of every internal model call or a quality-equivalent
