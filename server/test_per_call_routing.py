@@ -294,6 +294,56 @@ class PerCallEndToEnd(unittest.TestCase):
             ["jev", "lease", "jev", "jev"],
         )
 
+    def test_leases_end_on_compaction_or_changed_execution_contract(self):
+        opening = [message("user", "run the bounded checks")]
+        compacted = opening + [
+            {"type": "compaction", "encrypted_content": "checkpoint"},
+            tool_call("c0"),
+            tool_step("c0", "ok"),
+        ]
+        changed_tools = opening + [tool_call("c1"), tool_step("c1", "ok")]
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            side_effect=[
+                answer(jev.SOL, "medium", lease="user_turn"),
+                answer(jev.TERRA, "medium", lease="user_turn"),
+                answer(jev.LUNA, "low"),
+            ],
+        ) as judge:
+            self.call(payload_for(opening))
+            self.call(payload_for(compacted))
+            self.call(payload_for(changed_tools, tools=[
+                {"type": "function", "name": "exec_command"},
+                {"type": "function", "name": "read_file"},
+            ]))
+        self.assertEqual(judge.call_count, 3)
+        self.assertEqual(
+            [record["decision_source"] for record in self.records],
+            ["jev", "jev", "jev"],
+        )
+
+    def test_tool_chain_lease_rejects_a_mixed_result_batch(self):
+        opening = [message("user", "run the bounded checks")]
+        mixed = opening + [
+            tool_call("c0", "exec_command"),
+            tool_call("c1", "read_file"),
+            tool_step("c0", "ok"),
+            tool_step("c1", "ok"),
+        ]
+        with mock.patch.object(
+            jev, "call_jev_routed",
+            side_effect=[
+                answer(jev.LUNA, "low", lease="tool_chain"),
+                answer(jev.SOL, "medium"),
+            ],
+        ) as judge:
+            self.call(payload_for(opening))
+            self.call(payload_for(mixed))
+        self.assertEqual(judge.call_count, 2)
+        self.assertEqual(
+            [record["decision_source"] for record in self.records], ["jev", "jev"]
+        )
+
     def test_astra_effort_uses_configuration_update_without_rewriting_base_effort(self):
         history = [message("user", "perform the final security review")]
         sent = payload_for(history, reasoning={"effort": "low"})

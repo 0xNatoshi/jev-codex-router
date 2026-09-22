@@ -973,10 +973,64 @@ def _turn_fingerprint(payload):
     return hashlib.sha256(f"{user_count}:{text}".encode("utf-8")).hexdigest()[:20]
 
 
+def _lease_contract_fingerprint(payload):
+    """Private identity of request semantics that must invalidate a lease."""
+    inp = payload.get("input")
+    checkpoints = []
+    if isinstance(inp, list):
+        checkpoints = [
+            item for item in inp
+            if isinstance(item, dict)
+            and (item.get("type") in ("compaction", "compaction_summary")
+                 or item.get("role") in ("system", "developer"))
+        ]
+    contract = {
+        "instructions": payload.get("instructions"),
+        "tools": payload.get("tools"),
+        "tool_choice": payload.get("tool_choice"),
+        "truncation": payload.get("truncation"),
+        "context_management": payload.get("context_management"),
+        "checkpoints": checkpoints,
+    }
+    try:
+        encoded = json.dumps(
+            contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
+
+
+def _latest_tool_batch_names(payload):
+    """Resolve every tool name in the latest contiguous result batch."""
+    inp = payload.get("input")
+    if not isinstance(inp, list):
+        return ()
+    results = []
+    for item in reversed(inp):
+        if not isinstance(item, dict) or item.get("type") not in (
+            "function_call_output", "custom_tool_call_output"
+        ):
+            break
+        results.append(item)
+    if not results:
+        return ()
+    call_ids = {item.get("call_id") for item in results if item.get("call_id")}
+    calls = {
+        item.get("call_id"): str(item.get("name") or "")
+        for item in inp
+        if isinstance(item, dict)
+        and item.get("type") in ("function_call", "custom_tool_call")
+        and item.get("call_id") in call_ids
+    }
+    return tuple(calls.get(item.get("call_id"), "") for item in reversed(results))
+
+
 def route_lease(scope, payload, step, now=None):
     """Reuse a prior semantic route only for an unchanged, clean continuation."""
     now = time.time() if now is None else now
     fingerprint = _turn_fingerprint(payload)
+    contract = _lease_contract_fingerprint(payload)
     with _route_lease_lock:
         entry = _route_leases.get(scope)
         if not isinstance(entry, dict):
@@ -986,6 +1040,8 @@ def route_lease(scope, payload, step, now=None):
             or step.get("errored")
             or not fingerprint
             or entry.get("turn") != fingerprint
+            or not contract
+            or entry.get("contract") != contract
             or now - entry.get("seen_at", 0) > _cache_ttl_seconds(payload)
         ):
             _route_leases.pop(scope, None)
@@ -995,15 +1051,18 @@ def route_lease(scope, payload, step, now=None):
             _route_leases.pop(scope, None)
             return None
         if horizon == "tool_chain":
-            tool = step.get("tool_call", {}).get("name") or ""
+            tools = _latest_tool_batch_names(payload)
             previous_tool = entry.get("tool")
-            if previous_tool and tool != previous_tool:
+            if not tools or any(not tool for tool in tools):
                 _route_leases.pop(scope, None)
                 return None
-            if not tool:
+            if previous_tool and any(tool != previous_tool for tool in tools):
                 _route_leases.pop(scope, None)
                 return None
-            entry["tool"] = tool
+            if len(set(tools)) != 1:
+                _route_leases.pop(scope, None)
+                return None
+            entry["tool"] = tools[-1]
         entry["seen_at"] = now
         return dict(entry["decision"])
 
@@ -1022,7 +1081,8 @@ def remember_route_lease(scope, payload, step, decision, status, now=None):
             _route_leases.pop(scope, None)
         return
     fingerprint = _turn_fingerprint(payload)
-    if not fingerprint:
+    contract = _lease_contract_fingerprint(payload)
+    if not fingerprint or not contract:
         return
     now = time.time() if now is None else now
     preserved = {
@@ -1036,6 +1096,7 @@ def remember_route_lease(scope, payload, step, decision, status, now=None):
     with _route_lease_lock:
         _route_leases[scope] = {
             "turn": fingerprint,
+            "contract": contract,
             "lease": decision["lease"],
             "tool": (
                 step.get("tool_call", {}).get("name")
