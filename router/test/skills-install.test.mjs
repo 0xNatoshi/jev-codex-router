@@ -114,6 +114,17 @@ test("concurrent skill installs serialize ownership from recovery through public
   const home = tempCodexHome();
   const fakeSource = mkdtempSync(path.join(os.tmpdir(), "codex-skills-source-"));
   const ready = path.join(home, "first-install-staged");
+  const children = [];
+  function track(child) {
+    // Subscribe before any await: a fast child can close during staging.
+    const closed = once(child, "close");
+    closed.catch(() => {}); // An early spawn failure is awaited below.
+    child.stdout.resume();
+    child.stderr.resume();
+    children.push({ child, closed });
+    return closed;
+  }
+  let deadline;
   try {
     for (const name of ["a-skill", "b-skill"]) {
       mkdirSync(path.join(fakeSource, name), { recursive: true });
@@ -131,7 +142,8 @@ test("concurrent skill installs serialize ownership from recovery through public
       ],
       { encoding: "utf8", env: environment, stdio: ["ignore", "pipe", "pipe"] },
     );
-    await waitForPath(ready);
+    const firstClosed = track(first);
+    await waitForPath(ready, 30_000);
     const second = spawn(
       process.execPath,
       [
@@ -141,13 +153,24 @@ test("concurrent skill installs serialize ownership from recovery through public
       ],
       { encoding: "utf8", env: environment, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const [firstClose, secondClose] = await Promise.all([once(first, "close"), once(second, "close")]);
+    const secondClosed = track(second);
+    const [firstClose, secondClose] = await Promise.race([
+      Promise.all([firstClosed, secondClosed]),
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("Concurrent skill installs did not close within 90 seconds")), 90_000);
+      }),
+    ]);
     assert.equal(firstClose[0], 0);
     assert.equal(secondClose[0], 0);
     assert.deepEqual(managedSkillNames(home), ["a-skill", "b-skill"]);
     assert.deepEqual(Object.keys(ownership(home).skills).sort(), ["a-skill", "b-skill"]);
     assert.ok(!existsSync(`${skillOwnershipPath(home)}.lock`));
   } finally {
+    clearTimeout(deadline);
+    for (const { child } of children) {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    }
+    await Promise.allSettled(children.map(({ closed }) => closed));
     rmSync(home, { recursive: true, force: true });
     rmSync(fakeSource, { recursive: true, force: true });
   }
