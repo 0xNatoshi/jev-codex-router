@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "anthropic-api",
+      "displayName": "Anthropic API",
+      "kind": "openai-compatible",
+      "protocol": "anthropic",
+      "ownedBy": "anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "baseUrlEnv": "ANTHROPIC_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "file": "anthropic-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-anthropic-api"
+        ],
+        "prompt": "Anthropic API key"
+      }
+    }
+  ]
+}

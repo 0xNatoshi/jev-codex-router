@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/glm-5.2",
+      "gatewayModel": "commandcode-glm-5-2",
+      "upstreamModel": "zai-org/GLM-5.2",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "GLM-5.2 (Command Code)",
+      "description": "GLM-5.2 through the Command Code Provider API.",
+      "priority": 102,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-glm-5-2-v1"
+    }
+  ]
+}

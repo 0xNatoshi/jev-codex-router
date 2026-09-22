@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/deepseek-v4-pro",
+      "gatewayModel": "nousresearch-deepseek-v4-pro",
+      "upstreamModel": "deepseek/deepseek-v4-pro",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (Nous Research)",
+      "description": "DeepSeek V4 Pro through the Nous Portal.",
+      "priority": 88,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 943000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-deepseek-v4-pro-v1"
+    }
+  ]
+}

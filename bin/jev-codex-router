@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+repo_dir=$(CDPATH='' cd -P -- "$(dirname -- "$self")/.." && pwd -P)
+
+usage() {
+  cat <<'EOF'
+Usage: jev-codex-router COMMAND [ARGS...]
+
+Commands:
+  install [--prepare-only]  Install the complete embedded stack
+  update [ARGS...]          Update the monorepo and reinstall the complete stack
+  router ARGS...            Run the embedded codex-router CLI
+  smoke                     Run the Jev end-to-end smoke test
+  report [ARGS...]          Report observed routing and cache usage
+  help                      Show this help
+EOF
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$command" in
+  install) exec "$repo_dir/install.sh" "$@" ;;
+  update) exec "$repo_dir/router/bin/codex-router" update "$@" ;;
+  router) exec "$repo_dir/router/bin/codex-router" "$@" ;;
+  smoke) exec python3 "$repo_dir/server/smoke.py" "$@" ;;
+  report) exec python3 "$repo_dir/server/report_routing.py" "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

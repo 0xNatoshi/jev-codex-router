@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/kimi-k3",
+      "gatewayModel": "opencode-go-kimi-k3",
+      "upstreamModel": "kimi-k3",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K3 (opencode Go)",
+      "description": "Kimi K3 through the opencode Go subscription.",
+      "priority": 33,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-k3",
+      "compHash": "opencode-go-kimi-k3-v2"
+    }
+  ]
+}

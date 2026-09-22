@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/glm-5.2",
+      "gatewayModel": "nousresearch-glm-5-2",
+      "upstreamModel": "z-ai/glm-5.2",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "GLM-5.2 (Nous Research)",
+      "description": "Z.ai GLM-5.2 through the Nous Portal.",
+      "priority": 81,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 943000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-glm-5-2-v1"
+    }
+  ]
+}

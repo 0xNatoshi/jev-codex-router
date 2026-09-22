@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/claude-opus-5",
+      "gatewayModel": "nousresearch-claude-opus-5",
+      "upstreamModel": "anthropic/claude-opus-5",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Claude Opus 5 (Nous Research)",
+      "description": "Anthropic Claude Opus 5 through the Nous Portal.",
+      "priority": 78,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-claude-opus-5-v1"
+    }
+  ]
+}

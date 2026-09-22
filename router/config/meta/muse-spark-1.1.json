@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "meta/muse-spark-1.1",
+      "gatewayModel": "meta-muse-spark-1-1",
+      "upstreamModel": "muse-spark-1.1",
+      "provider": "meta",
+      "listed": true,
+      "displayName": "Muse Spark 1.1 (Meta)",
+      "description": "Previous-generation Muse Spark coding model with a 1M context window, through the Meta Model API using the Responses API.",
+      "priority": 50,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "Fastest responses"
+        },
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 850000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsApplyPatchTool": false,
+      "compHash": "meta-muse-spark-1-1-v2"
+    }
+  ]
+}

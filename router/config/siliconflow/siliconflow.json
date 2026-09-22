@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "siliconflow",
+      "displayName": "SiliconFlow",
+      "kind": "openai-compatible",
+      "ownedBy": "siliconflow",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "baseUrlEnv": "SILICONFLOW_BASE_URL",
+      "credential": {
+        "environment": [
+          "SILICONFLOW_API_KEY"
+        ],
+        "file": "siliconflow-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-siliconflow"
+        ],
+        "prompt": "SiliconFlow API key"
+      }
+    }
+  ]
+}

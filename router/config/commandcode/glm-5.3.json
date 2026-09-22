@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/glm-5.3",
+      "gatewayModel": "commandcode-glm-5-3",
+      "upstreamModel": "zai-org/GLM-5.3",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "GLM-5.3 (Command Code)",
+      "description": "GLM-5.3 through the Command Code Provider API. The model's thinking is always enabled with low/high/max reasoning ladder.",
+      "priority": 102,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast reasoning for simple edits"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-glm-5-3-v1"
+    }
+  ]
+}

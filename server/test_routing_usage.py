@@ -7,6 +7,15 @@ import report_routing as report
 
 
 class Usage(unittest.TestCase):
+    def test_terra_attempt_is_native_but_unverified_credit_rate_stays_unknown(self):
+        result = report.measured_usage([{"attempts": [{
+            "model": j.TERRA, "speed": "default",
+            "usage": {"input_tokens": 1000, "cached_input_tokens": 500, "output_tokens": 10},
+        }]}])
+        self.assertEqual(result["native_attempts"], 1)
+        self.assertEqual(result["unknown_attempts"], 1)
+        self.assertEqual(result["priced_attempts"], 0)
+
     def test_fragmented_terminal_event_captures_only_token_counters(self):
         raw_usage = {"input_tokens": 1000, "output_tokens": 120, "total_tokens": 1120,
                      "input_tokens_details": {"cached_tokens": 900},
@@ -58,6 +67,90 @@ class Usage(unittest.TestCase):
                                    2 * report.turn_cost(model, speed="default"))
             self.assertAlmostEqual(report.turn_cost(model, speed="fast"),
                                    2 * report.turn_cost(model, speed="default"))
+
+    def test_prompt_cache_is_measured_per_session_and_model(self):
+        entries = [
+            {"cache_scope": "session-a", "native": j.LUNA, "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 1000, "cached_input_tokens": 800,
+                          "cache_write_input_tokens": 100},
+            }]},
+            {"cache_scope": "session-a", "native": j.SOL, "attempts": [{
+                "model": j.SOL,
+                "usage": {"input_tokens": 2000, "cached_input_tokens": 0},
+            }]},
+            {"cache_scope": "session-a", "native": j.LUNA, "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 3000, "cached_input_tokens": 2400},
+            }]},
+            {"cache_scope": "session-b", "native": j.ASTRA, "attempts": [{
+                "model": j.ASTRA, "usage": None,
+            }]},
+        ]
+        cache = report.prompt_cache_usage(entries)
+        self.assertEqual(cache["tracked_sessions"], 2)
+        self.assertEqual(cache["route_switches"], 2)
+        self.assertEqual(cache["model_revisits"], 1)
+        self.assertEqual(cache["switch_cache"]["observed"], 2)
+        self.assertEqual(cache["switch_cache"]["hit_attempts"], 1)
+        self.assertEqual(cache["switch_cache"]["cached_share_pct"], 48.0)
+        self.assertEqual(cache["revisit_cache"]["observed"], 1)
+        self.assertEqual(cache["revisit_cache"]["hit_attempts"], 1)
+        self.assertEqual(cache["revisit_cache"]["cached_share_pct"], 80.0)
+        self.assertEqual(cache["observed_attempts"], 3)
+        self.assertEqual(cache["unknown_attempts"], 1)
+        self.assertEqual(cache["hit_attempts"], 2)
+        self.assertEqual(cache["cached_share_pct"], 53.3)
+        self.assertEqual(cache["cache_write_input_tokens"], 100)
+        self.assertEqual(cache["write_observed_attempts"], 1)
+        self.assertEqual(cache["by_model"][j.LUNA]["sessions"], 1)
+        self.assertEqual(cache["by_model"][j.LUNA]["hit_rate_pct"], 100.0)
+        self.assertEqual(cache["by_model"][j.SOL]["cached_share_pct"], 0.0)
+
+    def test_route_leases_and_experiment_cohorts_are_reported_separately(self):
+        usage = {"input_tokens": 1000, "cached_input_tokens": 800, "output_tokens": 10}
+        entries = [
+            {
+                "experiment": "routed", "cache_scope": "a", "decision_source": "jev",
+                "lease": "user_turn", "jev_usage": {"input_tokens": 120},
+                "status": 200, "native": j.LUNA,
+                "attempts": [{"model": j.LUNA, "speed": "default", "usage": usage}],
+            },
+            {
+                "experiment": "routed", "cache_scope": "a", "decision_source": "lease",
+                "lease": "user_turn", "lease_hit": True, "status": 200, "native": j.LUNA,
+                "attempts": [{"model": j.LUNA, "speed": "default", "usage": usage}],
+            },
+            {
+                "experiment": "all_sol", "cache_scope": "b", "decision_source": "jev",
+                "lease": "one_call", "jev_usage": {"inputTokens": 140},
+                "status": 200, "native": j.SOL,
+                "attempts": [{"model": j.SOL, "speed": "default", "usage": usage}],
+            },
+        ]
+        efficiency = report.routing_efficiency(entries)
+        self.assertEqual(efficiency["jev_decisions"], 2)
+        self.assertEqual(efficiency["lease_hits"], 1)
+        self.assertEqual(efficiency["decision_calls_avoided_pct"], 33.3)
+        self.assertEqual(efficiency["observed_jev_input_tokens"], 260)
+        experiment = report.experiment_comparison(entries)
+        self.assertEqual(experiment["cohorts"]["routed"]["turns"], 2)
+        self.assertEqual(experiment["cohorts"]["routed"]["lease_hits"], 1)
+        self.assertEqual(experiment["cohorts"]["all_sol"]["turns"], 1)
+
+    def test_explicitly_unscoped_calls_are_not_counted_as_cache_sessions(self):
+        entry = {
+            "cache_scope": "task-fallback", "cache_key_present": False,
+            "experiment": "routed",
+            "native": j.LUNA,
+            "attempts": [{
+                "model": j.LUNA,
+                "usage": {"input_tokens": 100, "cached_input_tokens": 0},
+            }],
+        }
+        cache = report.prompt_cache_usage([entry])
+        self.assertEqual(cache["tracked_sessions"], 0)
+        self.assertFalse(report.experiment_comparison([entry])["active"])
 
 
 if __name__ == "__main__":

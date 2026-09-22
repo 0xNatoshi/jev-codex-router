@@ -102,6 +102,9 @@ class ValidateAskTests(unittest.TestCase):
 class AskEndpointTests(unittest.TestCase):
     """Drives the real handler over loopback with a stubbed Jev call."""
 
+    def setUp(self):
+        self.enterContext(mock.patch.object(jev_server, "local_secret", return_value="fixture-local"))
+
     @classmethod
     def setUpClass(cls):
         cls.server = jev_server.ThreadingHTTPServer(("127.0.0.1", 0), jev_server.Handler)
@@ -119,7 +122,7 @@ class AskEndpointTests(unittest.TestCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer fixture-local"},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -174,6 +177,20 @@ class AskEndpointTests(unittest.TestCase):
                     )
                     self.assertEqual(status, 200)
 
+    def test_missing_local_auth_never_reaches_the_provider(self):
+        with mock.patch.object(jev_server, "call_jev_routed") as provider:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/ask", data=b'{}',
+                headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(request, timeout=5)
+            except urllib.error.HTTPError as error:
+                self.assertEqual(error.code, 401)
+                error.close()
+            else:
+                self.fail("authentication required")
+            provider.assert_not_called()
+
     def test_rejects_a_malformed_body_with_400(self):
         status, payload = self.failed_post({"state": "s", "questions": {}})
         self.assertEqual(status, 400)
@@ -193,13 +210,14 @@ class AskEndpointTests(unittest.TestCase):
                 {"state": "s", "questions": {"q": {"type": "noul", "instructions": "x"}}}
             )
         self.assertEqual(status, 502)
-        self.assertIn("boom", payload["error"]["message"])
+        self.assertIn("unavailable", payload["error"]["message"])
 
     def test_refuses_an_oversized_body_without_reading_it(self):
         connection = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         try:
             connection.sendall(
                 b"POST /ask HTTP/1.1\r\nHost: localhost\r\n"
+                b"Authorization: Bearer fixture-local\r\n"
                 b"Content-Length: 999999999\r\n\r\n"
             )
             # The refusal can arrive split across segments, and the server closes

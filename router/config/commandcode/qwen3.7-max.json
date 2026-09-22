@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/qwen3.7-max",
+      "gatewayModel": "commandcode-qwen3-7-max",
+      "upstreamModel": "Qwen/Qwen3.7-Max",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Qwen3.7 Max (Command Code)",
+      "description": "Qwen3.7 Max through the Command Code Provider API.",
+      "priority": 108,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "commandcode-qwen3-7-max-v1"
+    }
+  ]
+}

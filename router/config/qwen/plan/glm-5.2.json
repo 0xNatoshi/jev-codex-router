@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "qwen-plan/glm-5.2",
+      "gatewayModel": "qwen-plan-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "GLM-5.2 (Qwen Plan)",
+      "description": "Zhipu GLM-5.2 served through an Alibaba Model Studio Token or Coding Plan subscription rather than a separate Z.ai plan key.",
+      "priority": 20,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-glm-5-2-v2"
+    }
+  ]
+}

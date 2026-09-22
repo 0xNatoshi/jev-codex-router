@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/solar-pro4-free",
+      "gatewayModel": "nousresearch-solar-pro4-free",
+      "upstreamModel": "upstage/solar-pro4:free",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Solar Pro 4 (Nous Research)",
+      "description": "Solar Pro 4 through the Nous Portal free tier.",
+      "priority": 65,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 524288,
+      "autoCompact": 471859,
+      "inputModalities": [
+        "text"
+      ],
+      "isFree": true,
+      "compHash": "nousresearch-solar-pro4-free-v1"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/step-3.7-flash",
+      "gatewayModel": "commandcode-step-3-7-flash",
+      "upstreamModel": "stepfun/Step-3.7-Flash",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Step 3.7 Flash (Command Code)",
+      "description": "Step 3.7 Flash through the Command Code Provider API.",
+      "priority": 123,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 256000,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-step-3-7-flash-v1"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "zai-coding/glm-5.3-flash",
+      "gatewayModel": "zai-coding-glm-5-3-flash",
+      "upstreamModel": "glm-5.3-flash",
+      "provider": "zai-coding",
+      "listed": true,
+      "displayName": "GLM-5.3-Flash (Coding Plan)",
+      "description": "GLM-5.3-Flash through the Z.ai GLM Coding Plan subscription. The 1M-context route reads text and images, uses the model's low/high/max reasoning ladder, and keeps the conservative compaction threshold proven for the same model on opencode Go.",
+      "priority": 11,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast reasoning for simple edits"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning with thinking enabled"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 400000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "glm-thinking",
+      "compHash": "zai-coding-glm-5-3-flash-v2"
+    }
+  ]
+}

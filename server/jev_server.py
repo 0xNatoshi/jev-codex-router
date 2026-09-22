@@ -7,25 +7,44 @@ and a thinking depth, applies the routing policy, then relays to the Codex
 Router's local caller edge (native session sharing enabled) — with no format
 conversion: Responses in, Responses out, SSE relayed verbatim.
 
-Routing policy: Jev chooses one (model, thinking effort) pair for every call.
-Every pair uses standard speed. Confidence is logged without changing the chosen
-model. There are no keyword/scenario overrides or target model proportions.
+Routing policy: Jev independently classifies the mandatory-Astra policy, chooses
+one capability tier, one thinking depth and a bounded route lease in a single
+typed request. Code combines those answers and forces Astra for pre-project
+architecture, independent final code review or risk-focused review. Routine
+quality checkpoints use ordinary capability routing. Every pair uses standard
+speed. Confidence is logged without changing other valid choices. There are no
+keyword overrides or production target proportions; an explicit stable all-Sol
+measurement cohort is the sole experimental exception.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Per-call awareness (v2): every request is classified as a fresh user turn, a
-tool-step continuation, or other. Tool-steps carry a digest of the last tool
-output and its tool name into the Jev state, so Jev routes THIS step
-(mechanical continuation, standard next action, or frontier-worthy) instead
-of re-judging the session's original prompt. On live sessions (7 days):
-~92% of model calls are tool-steps — ~74% of the money weight.
+Measured routing (v10): every user turn, error, compaction and material tool-chain
+transition is judged independently. A Jev-selected lease may reuse the exact
+model/effort across clean continuations, avoiding a paid router call and cache
+thrash without masking changed state. Jev sees bounded cache affinity for the
+current private session: actual per-model cache-read evidence, its age and the
+last measured context size. A successful call with no cache read is only
+``warming``; it is never mislabeled as a hit. Capability remains primary, but a
+sufficient hot model avoids a needless cold replay. Provider retries inside one
+call retain its decision. The compact Jev projection is
+judgment input only: the executing model always receives the caller's canonical
+request in full, never that projection. Routing changes only transport controls
+and may add Astra's documented configuration update. The prompt_cache_key
+passes through untouched, allowing each selected model to reuse its own cache
+for this session; caches are not assumed to be shared across different models.
+Context continuity does not depend on those cache hits: every selected model
+receives the full canonical request. Cache reuse only changes how much of that
+identical prefix the provider must process and bill again.
 
-Input handling (v3): Jev sees the current ask, never the thread — the task is
+Input handling (v8): Jev sees the current ask, never the thread — the task is
 Codex's last user text, with Codex's own machine-generated envelopes stripped
-(goal context, plugin catalog, environment, skills) and clipped to the
-calibrated 500 chars as head+tail, because Codex appends the real tail after
-its own blocks. Thread length never reaches the judge: extract() keeps one tail
-item, the assistant side is bounded to 240 chars, and the only thread-sized
-number (n_items) stays in the local log instead of the Jev state.
+(goal context, plugin catalog, environment, skills) and clipped head+tail.
+Thread length never reaches the judge. A tool continuation adds a bounded
+batch summary (errors first) and a short assistant-intent tail. The complete
+history, instructions, tools, results and compaction handoff remain exclusively
+in the canonical request sent to the executing model. A short context-dependent
+ask such as "continue" also gets one bounded active-task summary: the goal
+envelope when present, otherwise the preceding meaningful user ask; a short
+confirmation also gets the last assistant proposal.
 Live data (4 516 calls): 1 291 (29%) had sent Jev nothing but a
 `<codex_internal_context source="goal">` block (~6.4k chars, p50) and 23 more
 only a `<recommended_plugins>` catalog — the head-clip stopped inside the
@@ -36,7 +55,9 @@ Fail-open: any Jev error → astra @medium. Kill switch: file
 Shadow: file ~/.codex/codex-router/jev-router.shadow → decide and log the
 route, but serve plain astra (quality-neutral data collection).
 Debug: file ~/.codex/codex-router/jev-router.debug → dump request shapes
-(jev-router-debug.jsonl) and raw response streams (jev-router-debug-stream.log).
+(jev-router-debug.jsonl) and transport counters (jev-router-debug-stream.log).
+All POSTs require the parent's protected Jev provider credential. Diagnostic
+logs are owner-only, bounded and contain no new prompt or generated-text excerpts.
 Display: streamed reasoning summaries get the routed tag appended in place
 ( · 🧠sol:low · ) so the Codex thread shows the picked model per call.
 The same rewriter keeps one response id across a relayed stream: a tandem stream
@@ -51,18 +72,19 @@ Log: ~/.codex/codex-router/jev-router-live.jsonl
 
 Codex-dry tandem: when native usage is exhausted — a manual flag file
 (~/.codex/codex-router/jev-router.codex-dry) or an observed quota failure
-(429 / usage-limit body) — the triptych is replaced until the window resets:
-frontier-tier (astra) calls go to GLM (opencode-go/glm-5.3-flash), every
-other tier to deepseek (opencode-go/deepseek-v4.1-flash). A quota failure
+(429 / usage-limit body) — the native model ladder is replaced until the window resets:
+all tiers default to deepseek/deepseek-v4.1-flash; environment settings can
+select distinct standard/frontier targets. A quota failure
 flips the state and retries the same call on the tandem; a successful native
 call clears an auto state (never the manual flag). A tandem call that comes
-back retryable (429/5xx) is tried once on the sibling model, because the two Go
-models are metered separately and a spent allowance is reported the same way a
-transient outage is. The decided depth travels with the call, mapped onto the Go
+back retryable (429/5xx) is tried once on a distinct configured sibling only,
+before sending any error to the client. The decided depth travels with the call, mapped onto the Go
 ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
 """
 import codecs
+import datetime
+import hashlib
 import http.client
 import json
 import os
@@ -71,8 +93,9 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from local_runtime import LocalServer, append_private, authorized, local_secret, protect_logs
 
-from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL,
+from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL, TERRA,
                             TIERS, decision_from_answers, route)
 
 HOME = os.path.expanduser("~")
@@ -85,13 +108,14 @@ DEBUG_PATH = os.path.join(STATE, "jev-router.debug")
 # Opt-in route header on each assistant text message. Presentation metadata is
 # removed from replayed history, including legacy trailing signatures.
 SIGNATURE_PATH = os.path.join(STATE, "jev-router.signature")
+SOL_BASELINE_PATH = os.path.join(STATE, "jev-router.sol-baseline.json")
 LOG_PATH = os.path.join(STATE, "jev-router-live.jsonl")
 
 LISTEN = ("127.0.0.1", 4319)
 ROUTER = ("127.0.0.1", 4202)
 
 DISPLAY_NAME = "Jev Codex Router"
-VERSION = "1.2"
+VERSION = "1.5"
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
@@ -102,20 +126,19 @@ MODEL = "jev-latest"
 # one. No routing policy, no logging of the caller's state.
 ASK_PATHS = ("/ask", "/v1/ask")
 ASK_MAX_BYTES = 256 * 1024
-# Responses requests may carry image inputs, so allow more than the typed ask
-# surface while still bounding what the loopback service will buffer.
-RESP_MAX_BYTES = 8 * 1024 * 1024
 ASK_MAX_STATE_CHARS = 120_000
 ASK_MAX_QUESTIONS = 40
 ASK_TIMEOUT = 15.0
 ASK_TYPES = ("noul", "choice", "score")
+RESPONSE_MAX_BYTES = 64 * 1024 * 1024
+READ_TIMEOUT = 15
 
 # Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
-GO_STANDARD = "deepseek/deepseek-v4.1-flash"
-GO_FRONTIER = "deepseek/deepseek-v4.1-flash"
-GO_TANDEM = (GO_STANDARD, GO_FRONTIER)
+GO_STANDARD = os.environ.get("JEV_FALLBACK_STANDARD", "deepseek/deepseek-v4.1-flash")
+GO_FRONTIER = os.environ.get("JEV_FALLBACK_FRONTIER", GO_STANDARD)
+GO_TANDEM = tuple(dict.fromkeys((GO_STANDARD, GO_FRONTIER)))
 # The tandem's own thinking ladder. Both Go models declare low/high/max where the
-# native triptych exposes low/medium/high/xhigh/max, so a depth keeps its meaning
+# native native model ladder exposes low/medium/high/xhigh/max, so a depth keeps its meaning
 # by landing on the middle rung instead of collapsing onto the floor: Jev says
 # "medium" about work it wants done carefully, and DeepSeek documents its `low`
 # as "no deep reasoning needed". The API forwarder clamps the value a second time
@@ -151,15 +174,24 @@ TERMINAL_EVENT_TYPES = ("response.completed", "response.incomplete", "response.f
 
 ERROR_RX = re.compile(
     r"(?i)(traceback|error|failed|exit code [1-9]|assertion|exception|fatal|panic)")
-DIGEST_CHARS = 520
+DIGEST_CHARS = 280
+INTENT_CHARS = 160
 
-# The task budget Jev was calibrated on (500 chars), spent as a head+tail window
+# A compact task budget spent as a head+tail window
 # so the tail survives: Codex puts its own blocks around the user's text, and the
-# ask itself can be the last thing in a long paste. 320 + marker + 171 <= 500.
-TASK_CHARS = 500
-TASK_HEAD_CHARS = 320
+# ask itself can be the last thing in a long paste. 250 + marker + 141 <= 400.
+TASK_CHARS = 400
+TASK_HEAD_CHARS = 250
 TASK_TAIL_CHARS = TASK_CHARS - TASK_HEAD_CHARS - 9
 TASK_CLIP_MARK = "\n[...]\n"
+CONTEXT_TASK_CHARS = 320
+CACHE_DEFAULT_TTL_S = 30 * 60
+CACHE_MAX_TTL_S = 24 * 60 * 60
+CACHE_TTL_RX = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.I)
+_cache_affinity_lock = threading.Lock()
+_cache_affinity = {}
+_route_lease_lock = threading.Lock()
+_route_leases = {}
 
 # Codex wraps every turn in machine-generated blocks (goal context, plugin
 # catalog, environment, skills, mode notices). They are the longest part of a
@@ -179,13 +211,13 @@ ENVELOPE_RX = re.compile(
 # work objective ("Continue working toward the active thread goal. / The
 # objective below is ..."), so it is what an envelope-only turn falls back to.
 GOAL_BODY_RX = re.compile(
-    r'<codex_internal_context(?:\s[^<>]*)?>(.*?)</codex_internal_context\s*>', re.S)
+    r'<codex_internal_context(?=[^<>]*\bsource=["\']goal["\'])'
+    r'(?:\s[^<>]*)?>(.*?)</codex_internal_context\s*>',
+    re.S,
+)
 # A single envelope has been seen at 950k chars. Past this size only the two ends
 # are scanned, which is where the user's text sits anyway.
 ENVELOPE_SCAN_CHARS = 200_000
-
-_log_lock = threading.Lock()
-
 
 def load_key():
     """TYPESAFE_API_KEY: env files win (the process environment can be stale)."""
@@ -276,7 +308,7 @@ def mark_native_dry(reason, resets_at=None):
     """Flip to the Go tandem, for as long as the exhausted window stays shut.
 
     `resets_at` is the instant the edge said the window reopens. Ending the
-    state just after it is what sends the next call back to the native triptych
+    state just after it is what sends the next call back to the native native model ladder
     as soon as the quota returns; without that announcement the flip keeps the
     bounded cooldown instead.
     """
@@ -316,7 +348,7 @@ def tandem_effort(effort, native_model=None):
 
 def other_tandem(target):
     """The sibling Go model, for one bounded fallback attempt."""
-    return GO_FRONTIER if target == GO_STANDARD else GO_STANDARD
+    return next((model for model in GO_TANDEM if model != target), None)
 
 
 def dry_target(native_model, effort):
@@ -407,6 +439,8 @@ def strip_envelopes(text):
     empty task would push the call onto the caller's fail-open path. A catalog-
     or environment-only turn holds no request at all, so it keeps nothing.
     """
+    if text.startswith("# AGENTS.md instructions for ") and "</INSTRUCTIONS>" in text:
+        text = text.split("</INSTRUCTIONS>", 1)[1]
     if len(text) <= ENVELOPE_SCAN_CHARS:
         scanned = text
     else:
@@ -435,10 +469,22 @@ def task_for_jev(text):
     return clip_task(strip_envelopes(text))
 
 
+def context_dependent(task):
+    """Give short asks bounded context; don't guess intent from keyword lists."""
+    return bool(task) and len(task) <= 120
+
+
+def goal_for_jev(text):
+    """Bounded active objective from Codex's goal envelope, when it exists."""
+    match = GOAL_BODY_RX.search(text[:ENVELOPE_SCAN_CHARS])
+    return clip_task(match.group(1))[:CONTEXT_TASK_CHARS] if match else ""
+
+
 def extract(payload):
-    """Last user message (envelope-free, clipped) + last assistant message + small stats."""
+    """Current ask, assistant tail and only the task context needed to judge it."""
     inp = payload.get("input")
     last_user = last_assistant = ""
+    prior_task = ""
     n_items = 0
     has_image = False
     tool_tail = False
@@ -459,17 +505,29 @@ def extract(payload):
             if not isinstance(item, dict):
                 continue
             role = item.get("role")
-            if role == "user" and not last_user:
-                last_user = _content_text(item.get("content"))
+            if role == "user":
+                text = _content_text(item.get("content"))
+                if not task_for_jev(text):
+                    continue
+                if not last_user:
+                    last_user = text
+                elif not prior_task:
+                    prior_task = task_for_jev(text)
             elif role == "assistant" and not last_assistant:
                 last_assistant = _content_text(item.get("content"))
-            if last_user and last_assistant:
+            if last_user and prior_task and last_assistant:
                 break
-    return task_for_jev(last_user), last_assistant.strip(), {
+    task = task_for_jev(last_user)
+    signals = {
         "n_items": n_items,
         "has_image": has_image,
         "tool_history": tool_tail,
     }
+    if context_dependent(task):
+        context_task = goal_for_jev(last_user) or prior_task
+        if context_task:
+            signals["context_task"] = context_task[:CONTEXT_TASK_CHARS]
+    return task, last_assistant.strip(), signals
 
 
 def _output_text(output):
@@ -522,32 +580,71 @@ def classify(payload):
                             and item.get("type") in ("function_call", "custom_tool_call")):
                         detail["tool_call"] = {"name": str(item.get("name") or "")[:160]}
                         break
+            # Preserve a bounded view of the entire contiguous tool-result batch.
+            # Error counts cover all results, excerpts only the first 3 errors or
+            # (when clean) the last 3 results. Arguments never enter the dossier.
+            batch = []
+            for item in reversed(inp):
+                if not isinstance(item, dict) or item.get("type") not in (
+                    "function_call_output", "custom_tool_call_output"
+                ):
+                    break
+                batch.append(item)
+            if len(batch) > 1:
+                batch.reverse()
+                calls = {item.get("call_id"): str(item.get("name") or "")[:80]
+                         for item in inp if isinstance(item, dict)
+                         and item.get("type") in ("function_call", "custom_tool_call")}
+                rows, errors = [], []
+                for item in batch:
+                    text = _output_text(item.get("output")).strip()
+                    error = ERROR_RX.search(text[-4000:])
+                    excerpt = (text[-4000:][max(0, error.start() - 30):][:120]
+                               if error else text[-120:])
+                    row = {"tool": calls.get(item.get("call_id"), ""),
+                           "error": bool(error), "result": excerpt}
+                    rows.append(row)
+                    if error:
+                        errors.append(row)
+                detail["tool_batch"] = {
+                    "count": len(batch), "errors": len(errors),
+                    "results": errors[:3] if errors else rows[-3:],
+                }
+                detail["errored"] = bool(errors)
         elif last.get("role") == "user":
             detail["step_type"] = "user_turn"
     return detail
 
 
-def jev_state(task, prev_assistant, signals, step):
-    """The state sent to Jev: the current ask plus signals that do not grow.
-
-    `n_items` is deliberately left out. It is the one number that scales with the
-    thread, and the calibrated shapes (backtest, shadow replay) never carried it,
-    so letting it travel would make the same last exchange judge differently in a
-    long thread than in a short one — the opposite of per-call routing. It stays
-    in the local decision log.
-    """
-    state = {
-        "task": task,
-        "signals": {k: v for k, v in signals.items() if k != "n_items"},
-        "step": {"type": step["step_type"]},
-    }
-    if prev_assistant:
-        state["previous_assistant"] = prev_assistant[-240:]
+def jev_state(task, prev_assistant, signals, step, cache_state=None):
+    """Strictly bounded decision dossier; never reused as execution context."""
+    state = {"task": task, "step": step["step_type"]}
+    if cache_state:
+        state["cache_state"] = cache_state
+    if signals.get("context_task"):
+        state["active_task"] = signals["context_task"]
+    if signals.get("has_image"):
+        state["image"] = True
+    if step["step_type"] != "user_turn" and prev_assistant:
+        state["intent_tail"] = prev_assistant[-INTENT_CHARS:]
+    elif context_dependent(task) and prev_assistant:
+        state["previous_proposal"] = prev_assistant[-INTENT_CHARS:]
     if step["step_type"] == "tool_step":
-        state["step"]["last_tool_output_tail"] = step["digest"]
-        if step.get("tool_call"):
-            state["step"]["tool_call"] = step["tool_call"]
+        if step.get("tool_batch"):
+            state["tool_batch"] = step["tool_batch"]
+        elif step["digest"]:
+            state["tool_result_tail"] = step["digest"]
+        if step.get("errored"):
+            state["tool_error"] = True
+        if step.get("tool_call", {}).get("name"):
+            state["tool"] = step["tool_call"]["name"]
     return state
+
+
+def decision_dossier(payload, cache_state=None):
+    """Shared projection for live traffic, replay and calibration."""
+    task, previous, signals = extract(payload)
+    return jev_state(task, previous, signals, classify(payload), cache_state)
 
 
 def _debug_shape(payload):
@@ -571,7 +668,7 @@ def _debug_shape(payload):
         "store": payload.get("store"),
         "tool_choice": payload.get("tool_choice"),
         "parallel_tool_calls": payload.get("parallel_tool_calls"),
-        "instructions_head": (payload.get("instructions") or "")[:200],
+        "instructions_chars": len(payload.get("instructions") or ""),
         "n_input": len(items),
         "tail": tail,
         "tools": names,
@@ -588,6 +685,262 @@ TANDEM_GLYPHS = {
     "deepseek-v4.1-flash": ("deepseek", "🐳"),  # Go standard (native dry)
     "glm-5.3-flash": ("glm", "✨"),             # Go frontier (native dry)
 }
+
+
+def cache_scope(payload, task):
+    """Non-reversible session id for cache telemetry; raw cache keys never log."""
+    raw = payload.get("prompt_cache_key")
+    if isinstance(raw, str) and raw.strip():
+        source = "prompt:" + raw.strip()
+    else:
+        source = "task:" + (task or "")
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_ttl_seconds(payload):
+    """Caller cache TTL, bounded to the lifetime useful for in-memory affinity."""
+    options = payload.get("prompt_cache_options")
+    raw = options.get("ttl") if isinstance(options, dict) else None
+    if not isinstance(raw, str):
+        return CACHE_DEFAULT_TTL_S
+    match = CACHE_TTL_RX.match(raw)
+    if not match:
+        return CACHE_DEFAULT_TTL_S
+    scale = {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2).lower()]
+    return min(max(float(match.group(1)) * scale, 1), CACHE_MAX_TTL_S)
+
+
+def _estimated_context_k(payload):
+    """Approximate canonical input tokens in thousands without exposing prompt text."""
+    try:
+        size = len(json.dumps(
+            payload.get("input"), ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None
+    return max(1, int(round(size / 4000.0)))
+
+
+def cache_affinity(scope, payload, now=None):
+    """Bounded measured cache evidence for one prompt-cache scope.
+
+    Only a real prompt_cache_key is safe for continuity. The task-derived scope
+    remains useful for aggregate telemetry but may repeat across unrelated calls.
+    """
+    raw_key = payload.get("prompt_cache_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return None
+    now = time.time() if now is None else now
+    ttl = _cache_ttl_seconds(payload)
+    with _cache_affinity_lock:
+        entry = _cache_affinity.get(scope)
+        if not isinstance(entry, dict):
+            return None
+        models = {}
+        for model, evidence in entry.get("models", {}).items():
+            if model not in TIERS or not isinstance(evidence, dict):
+                continue
+            seen_at = evidence.get("seen_at")
+            if not isinstance(seen_at, (int, float)) or now - seen_at > ttl:
+                continue
+            models[model] = evidence
+        if not models:
+            _cache_affinity.pop(scope, None)
+            return None
+        entry["models"] = models
+        last_model = entry.get("last_model")
+        if last_model not in models:
+            last_model = max(models, key=lambda model: models[model]["seen_at"])
+            entry["last_model"] = last_model
+        result = {
+            "last_model": route_label(last_model)[0],
+            "context_k": (
+                (models[last_model].get("input_tokens") or 0) // 1000
+                or _estimated_context_k(payload)
+            ),
+            "models": {},
+        }
+        for model in TIERS:
+            evidence = models.get(model)
+            if not evidence:
+                continue
+            result["models"][route_label(model)[0]] = {
+                "state": evidence.get("state", "unknown"),
+                "read_pct": evidence.get("read_pct"),
+                "age_s": max(0, int(now - evidence["seen_at"])),
+                "effort": evidence.get("effort"),
+            }
+        return result
+
+
+def remember_cache_model(scope, payload, model, status, usage=None, effort=None, now=None):
+    """Remember measured native cache evidence; HTTP success alone is not a hit."""
+    raw_key = payload.get("prompt_cache_key")
+    if (
+        status != 200
+        or model not in TIERS
+        or not isinstance(raw_key, str)
+        or not raw_key.strip()
+    ):
+        return
+    now = time.time() if now is None else now
+    ttl = _cache_ttl_seconds(payload)
+    counts = usage_counts(usage)
+    inp = counts.get("input_tokens") if counts else None
+    cached = counts.get("cached_input_tokens") if counts else None
+    if isinstance(inp, int) and isinstance(cached, int) and 0 <= cached <= inp:
+        state = "hot" if cached > 0 else "warming"
+        read_pct = round(100.0 * cached / inp, 1) if inp else 0.0
+    else:
+        state, read_pct = "unknown", None
+    with _cache_affinity_lock:
+        entry = _cache_affinity.setdefault(scope, {"models": {}})
+        entry["models"] = {
+            known_model: evidence
+            for known_model, evidence in entry.get("models", {}).items()
+            if known_model in TIERS and isinstance(evidence, dict)
+            and isinstance(evidence.get("seen_at"), (int, float))
+            and now - evidence["seen_at"] <= ttl
+        }
+        entry["models"][model] = {
+            "seen_at": now,
+            "state": state,
+            "input_tokens": inp,
+            "cached_input_tokens": cached,
+            "cache_write_input_tokens": (
+                counts.get("cache_write_input_tokens") if counts else None
+            ),
+            "read_pct": read_pct,
+            "effort": effort if effort in EFFORTS else None,
+        }
+        entry["last_model"] = model
+
+
+def _turn_fingerprint(payload):
+    """Stable private identity of the latest user turn, never persisted or logged."""
+    inp = payload.get("input")
+    text = inp if isinstance(inp, str) else ""
+    user_count = 1 if isinstance(inp, str) else 0
+    if isinstance(inp, list):
+        user_count = sum(
+            1 for item in inp
+            if isinstance(item, dict) and item.get("role") == "user"
+        )
+        for index in range(len(inp) - 1, -1, -1):
+            item = inp[index]
+            if isinstance(item, dict) and item.get("role") == "user":
+                text = _content_text(item.get("content"))
+                break
+    if not text:
+        return None
+    return hashlib.sha256(f"{user_count}:{text}".encode("utf-8")).hexdigest()[:20]
+
+
+def route_lease(scope, payload, step, now=None):
+    """Reuse a prior semantic route only for an unchanged, clean continuation."""
+    now = time.time() if now is None else now
+    fingerprint = _turn_fingerprint(payload)
+    with _route_lease_lock:
+        entry = _route_leases.get(scope)
+        if not isinstance(entry, dict):
+            return None
+        if (
+            step.get("step_type") != "tool_step"
+            or step.get("errored")
+            or not fingerprint
+            or entry.get("turn") != fingerprint
+            or now - entry.get("seen_at", 0) > _cache_ttl_seconds(payload)
+        ):
+            _route_leases.pop(scope, None)
+            return None
+        horizon = entry.get("lease")
+        if horizon == "one_call":
+            _route_leases.pop(scope, None)
+            return None
+        if horizon == "tool_chain":
+            tool = step.get("tool_call", {}).get("name") or ""
+            previous_tool = entry.get("tool")
+            if previous_tool and tool != previous_tool:
+                _route_leases.pop(scope, None)
+                return None
+            if not tool:
+                _route_leases.pop(scope, None)
+                return None
+            entry["tool"] = tool
+        entry["seen_at"] = now
+        return dict(entry["decision"])
+
+
+def remember_route_lease(scope, payload, step, decision, status, now=None):
+    """Persist only successful, explicitly scoped Jev decisions in memory."""
+    raw_key = payload.get("prompt_cache_key")
+    if (
+        status != 200
+        or not isinstance(raw_key, str)
+        or not raw_key.strip()
+        or not isinstance(decision, dict)
+        or decision.get("lease") == "one_call"
+    ):
+        with _route_lease_lock:
+            _route_leases.pop(scope, None)
+        return
+    fingerprint = _turn_fingerprint(payload)
+    if not fingerprint:
+        return
+    now = time.time() if now is None else now
+    preserved = {
+        key: decision.get(key)
+        for key in (
+            "model", "base_model", "astra_policy", "effort", "lease", "speed",
+            "gate", "confidence", "probabilities", "chosen_probability",
+            "policy_version",
+        )
+    }
+    with _route_lease_lock:
+        _route_leases[scope] = {
+            "turn": fingerprint,
+            "lease": decision["lease"],
+            "tool": (
+                step.get("tool_call", {}).get("name")
+                if step.get("step_type") == "tool_step"
+                else None
+            ),
+            "seen_at": now,
+            "decision": preserved,
+        }
+
+
+def sol_baseline_config(now=None):
+    """Read the opt-in all-Sol experiment without caching mutable operations state."""
+    try:
+        with open(SOL_BASELINE_PATH, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    percent = config.get("percent")
+    if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+        return None
+    percent = min(100.0, max(0.0, float(percent)))
+    until = config.get("until")
+    if until:
+        try:
+            expires = datetime.datetime.fromisoformat(str(until).replace("Z", "+00:00"))
+            current = datetime.datetime.now(expires.tzinfo) if now is None else now
+            if isinstance(current, (int, float)):
+                current = datetime.datetime.fromtimestamp(current, expires.tzinfo)
+            if current >= expires:
+                return None
+        except (TypeError, ValueError):
+            return None
+    return {"percent": percent, "until": until}
+
+
+def sol_baseline_member(scope, config):
+    """Stable hashed-session assignment, with no raw session identifier."""
+    if not config or config["percent"] <= 0:
+        return False
+    bucket = int(hashlib.sha256(f"sol-baseline:{scope}".encode()).hexdigest()[:8], 16)
+    return bucket % 10_000 < int(config["percent"] * 100)
 
 
 def route_label(model):
@@ -616,6 +969,17 @@ def answer_signature(shown):
     short, glyph = route_label(shown.get("model"))
     effort = shown.get("effort") or "non spécifié"
     return f"**{glyph} {short} · thinking: {effort}**\n\n"
+
+
+def presentation_signature(payload, shown):
+    """Never prefix data constrained by a JSON response format."""
+    text = payload.get("text")
+    fmt = text.get("format") if isinstance(text, dict) else None
+    legacy = payload.get("response_format")
+    if any(isinstance(value, dict) and value.get("type") not in (None, "text")
+           for value in (fmt, legacy)):
+        return None
+    return answer_signature(shown)
 
 
 # Only our exact presentation forms, at the boundaries of assistant text.
@@ -663,17 +1027,86 @@ def usage_counts(usage):
         return None
     out = {}
     for name in ("input_tokens", "output_tokens", "total_tokens",
-                 "cache_write_input_tokens"):
+                 "cached_input_tokens", "cache_write_input_tokens"):
         value = usage.get(name)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             out[name] = value
     for group, name in (("input_tokens_details", "cached_tokens"),
+                        ("input_tokens_details", "cache_write_tokens"),
                         ("output_tokens_details", "reasoning_tokens")):
         details = usage.get(group)
         value = details.get(name) if isinstance(details, dict) else None
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            out["cached_input_tokens" if name == "cached_tokens" else name] = value
+            if name == "cached_tokens":
+                out["cached_input_tokens"] = value
+            elif name == "cache_write_tokens":
+                out["cache_write_input_tokens"] = value
+            else:
+                out[name] = value
     return out or None
+
+
+def _astra_configuration_eligible(payload):
+    """Whether this Responses request can safely carry an Astra config update."""
+    items = payload.get("input")
+    if not isinstance(items, list) or not items:
+        return False
+    if payload.get("truncation") == "auto" or payload.get("context_management"):
+        return False
+    if any(
+        isinstance(item, dict)
+        and item.get("type") in ("configuration_update", "compaction", "compaction_summary")
+        for item in items
+    ):
+        return False
+    return any(isinstance(item, dict) and item.get("role") == "user" for item in items)
+
+
+def apply_route_payload(payload, model, effort, original_reasoning, injected_update=None):
+    """Apply one attempt's route while preserving the stable request prefix.
+
+    Astra can change reasoning for the next user message through a
+    configuration_update, leaving the request-level reasoning prefix unchanged.
+    Retries remove the update by object identity before targeting another model.
+    """
+    items = payload.get("input")
+    if injected_update is not None and isinstance(items, list):
+        payload["input"] = [item for item in items if item is not injected_update]
+        items = payload["input"]
+    if original_reasoning is None:
+        payload.pop("reasoning", None)
+    else:
+        payload["reasoning"] = dict(original_reasoning)
+
+    payload["model"] = model
+    transport = "request"
+    next_update = None
+    base_effort = (
+        original_reasoning.get("effort")
+        if isinstance(original_reasoning, dict)
+        else None
+    )
+    if (
+        model == ASTRA
+        and effort in EFFORTS
+        and base_effort in EFFORTS
+        and effort != base_effort
+        and _astra_configuration_eligible(payload)
+    ):
+        next_update = {"type": "configuration_update", "reasoning": {"effort": effort}}
+        insert_at = max(
+            index for index, item in enumerate(payload["input"])
+            if isinstance(item, dict) and item.get("role") == "user"
+        )
+        payload["input"].insert(insert_at, next_update)
+        transport = "configuration_update"
+    elif effort:
+        reasoning = dict(original_reasoning) if isinstance(original_reasoning, dict) else {}
+        reasoning["effort"] = effort
+        payload["reasoning"] = reasoning
+    payload["service_tier"] = "default"
+    payload["stream"] = True
+    return next_update, transport
 
 
 class SummaryMarker:
@@ -907,6 +1340,7 @@ class SummaryMarker:
                 out.append(self._emit(self._tag_item_block(block)))
                 return out
         if dtype in TERMINAL_EVENT_TYPES:
+            self._flush_held(out)
             response = data.get("response")
             self.terminal_type = dtype
             self.usage = usage_counts(response.get("usage")) if isinstance(response, dict) else None
@@ -971,9 +1405,9 @@ def assemble_sse(raw):
         etype = event.get("type") if isinstance(event, dict) else None
         if etype == "response.output_item.done" and isinstance(event.get("item"), dict):
             items[event.get("output_index") or 0] = event["item"]
-        elif etype == "response.completed":
+        elif etype in TERMINAL_EVENT_TYPES:
             final = event.get("response")
-        elif isinstance(etype, str) and etype in ("response.failed", "error"):
+        elif etype == "error":
             error = event
     if final is not None:
         if not final.get("output") and items:
@@ -986,16 +1420,66 @@ def assemble_sse(raw):
 
 def log_line(record):
     try:
-        with _log_lock:
-            with open(LOG_PATH, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_private(LOG_PATH, json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "jev-router/1.2"
+    server_version = "jev-router/1.5"
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(READ_TIMEOUT)
+        self._response_started = False
+
+    def send_response(self, code, message=None):
+        self._response_started = True
+        super().send_response(code, message)
+
+    def _body(self, limit):
+        """Validate framing and read a bounded JSON object within a deadline."""
+        lengths = self.headers.get_all("Content-Length", [])
+        if self.headers.get("Transfer-Encoding") or len(lengths) != 1:
+            self._json(400, {"error": {"message": "one Content-Length required"}})
+            return None
+        try:
+            length = int(lengths[0])
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self._json(400, {"error": {"message": "invalid Content-Length"}})
+            return None
+        if length > limit:
+            self._json(413, {"error": {"message": "body too large"}})
+            return None
+        if self.headers.get_content_type() != "application/json":
+            self._json(415, {"error": {"message": "application/json required"}})
+            return None
+        deadline = time.monotonic() + READ_TIMEOUT
+        pieces, remaining = [], length
+        while remaining:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("request body deadline")
+            self.connection.settimeout(left)
+            chunk = self.rfile.read1(min(65536, remaining))
+            if not chunk:
+                self._json(400, {"error": {"message": "incomplete request body"}})
+                return None
+            pieces.append(chunk)
+            remaining -= len(chunk)
+        self.connection.settimeout(READ_TIMEOUT)
+        try:
+            body = json.loads(b"".join(pieces))
+        except (ValueError, UnicodeError):
+            self._json(400, {"error": {"message": "invalid json"}})
+            return None
+        if not isinstance(body, dict):
+            self._json(400, {"error": {"message": "json object expected"}})
+            return None
+        return body
 
     def log_message(self, *args):
         pass
@@ -1008,39 +1492,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _body_length(self, limit):
-        """Return (length, error_status, error_message) for a JSON request body."""
-        transfer_encoding = (self.headers.get("Transfer-Encoding") or "").strip().lower()
-        if transfer_encoding and transfer_encoding != "identity":
-            return None, 501, "chunked transfer encoding is not supported"
-        value = self.headers.get("Content-Length")
-        if value is None:
-            return None, 411, "Content-Length header is required"
-        try:
-            length = int(value)
-        except (TypeError, ValueError):
-            return None, 400, "invalid Content-Length header"
-        if length < 0:
-            return None, 400, "invalid Content-Length header"
-        if length > limit:
-            return None, 413, f"body too large ({length} bytes)"
-        return length, None, None
-
     def _ask(self):
         """Typed pass-through to System One for local callers (:4319, loopback only).
 
         No policy, no logging of the caller's state: the body is validated,
         forwarded as-is and only the typed answers come back.
         """
-        length, error_status, error_message = self._body_length(ASK_MAX_BYTES)
-        if error_status:
-            self.close_connection = True
-            return self._json(error_status, {"error": {"message": error_message}})
-        raw = self.rfile.read(length) if length else b""
-        try:
-            body = json.loads(raw.decode("utf-8"))
-        except ValueError:
-            return self._json(400, {"error": {"message": "invalid json"}})
+        body = self._body(ASK_MAX_BYTES)
+        if body is None:
+            return
         state, questions, error = validate_ask(body)
         if error:
             return self._json(400, {"error": {"message": error}})
@@ -1050,8 +1510,8 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.time()
         try:
             answer = call_jev_routed(key, state, questions, timeout=ASK_TIMEOUT)
-        except Exception as exc:
-            return self._json(502, {"error": {"message": f"jev: {exc}"[:300]}})
+        except Exception:
+            return self._json(502, {"error": {"message": "Jev provider unavailable"}})
         return self._json(200, {
             "model": answer.get("model"),
             "answers": answer.get("answers") or {},
@@ -1074,18 +1534,30 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path in ("/health", ""):
             self._json(200, {"ok": True, "service": "jev-router", "version": VERSION,
-                             "policy_version": POLICY_VERSION})
+                             "policy_version": POLICY_VERSION,
+                             "auth_configured": bool(local_secret())})
         else:
             self._json(404, {"error": {"message": "not found"}})
 
     def do_POST(self):
+        self.close_connection = True
+        self._response_started = False
         try:
+            secret = local_secret()
+            if not secret:
+                return self._json(503, {"error": {"message": "local credential not configured"}})
+            if not authorized(self.headers.get("Authorization"), secret):
+                return self._json(401, {"error": {"message": "Unauthorized"}})
+            # Browsers are not clients of this local server.
+            if self.headers.get("Origin"):
+                return self._json(403, {"error": {"message": "browser origin not supported"}})
             self._post()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as exc:  # fail-open at the response level only
+        except Exception:
             try:
-                self._json(502, {"error": {"message": f"jev-router: {exc}"}})
+                if not self._response_started:
+                    self._json(502, {"error": {"message": "local router request failed"}})
             except Exception:
                 pass
 
@@ -1093,20 +1565,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.rstrip("/") in ASK_PATHS:
             return self._ask()
-        if "/responses" not in path:
-            return self._json(404, {"error": {"message": f"unsupported path {path}"}})
-
-        length, error_status, error_message = self._body_length(RESP_MAX_BYTES)
-        if error_status:
-            self.close_connection = True
-            return self._json(error_status, {"error": {"message": error_message}})
-        raw = self.rfile.read(length) if length else b""
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except ValueError:
-            return self._json(400, {"error": {"message": "invalid json"}})
-        if not isinstance(payload, dict):
-            return self._json(400, {"error": {"message": "json object expected"}})
+        if path.rstrip("/") not in ("/responses", "/v1/responses"):
+            return self._json(404, {"error": {"message": "unsupported path"}})
+        payload = self._body(RESPONSE_MAX_BYTES)
+        if payload is None:
+            return
         # Our own answer signatures never travel back upstream (see
         # strip_signatures): the model must not read its own route tag.
         stripped = strip_signatures(payload)
@@ -1115,10 +1578,9 @@ class Handler(BaseHTTPRequestHandler):
         debug = os.path.exists(DEBUG_PATH)
         if debug:
             try:
-                with open(os.path.join(STATE, "jev-router-debug.jsonl"), "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(
-                        {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "shape": _debug_shape(payload)},
-                        ensure_ascii=False) + "\n")
+                append_private(os.path.join(STATE, "jev-router-debug.jsonl"), json.dumps(
+                    {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "shape": _debug_shape(payload)},
+                    ensure_ascii=False) + "\n")
             except OSError:
                 pass
         task, prev_assistant, signals = extract(payload)
@@ -1129,13 +1591,25 @@ class Handler(BaseHTTPRequestHandler):
         jev_ms = None
         decision = None
         jev_usage = None
+        decision_source = None
+        scope = cache_scope(payload, task)
+        affinity = cache_affinity(scope, payload)
+        leased = route_lease(scope, payload, step)
         if os.path.exists(OFF_PATH):
             model, effort, speed, gate = ASTRA, None, "default", "off"
         else:
             key = load_key()
-            if key and (task or step.get("digest") or signals.get("has_image")):
+            if leased is not None:
+                decision = leased
+                tier, depth, conf = (
+                    decision["model"], decision["effort"], decision["confidence"]
+                )
+                model, effort, speed, _ = route(tier, depth)
+                gate = decision["gate"]
+                decision_source = "lease"
+            elif key and (task or step.get("digest") or signals.get("has_image")):
                 jt0 = time.time()
-                state = jev_state(task, prev_assistant, signals, step)
+                state = jev_state(task, prev_assistant, signals, step, affinity)
                 try:
                     result = call_jev_routed(key, state)
                     decision = decision_from_answers(result.get("answers"))
@@ -1147,22 +1621,44 @@ class Handler(BaseHTTPRequestHandler):
                                  and isinstance(v, int) and not isinstance(v, bool) and v >= 0}
                     tier, depth, conf = (decision["model"], decision["effort"],
                                          decision["confidence"])
-                    model, effort, speed, gate = route(tier, depth)
+                    model, effort, speed, _ = route(tier, depth)
+                    gate = decision["gate"]
+                    decision_source = "jev"
                 except Exception as exc:
                     model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
+                    decision_source = "technical_fallback"
                 jev_ms = int((time.time() - jt0) * 1000)
             else:
                 model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
+                decision_source = "technical_fallback"
+
+        semantic_model = model
+        experiment_config = sol_baseline_config()
+        experiment = None
+        shadow_enabled = os.path.exists(SHADOW_PATH)
+        experiment_scope = (
+            isinstance(payload.get("prompt_cache_key"), str)
+            and bool(payload["prompt_cache_key"].strip())
+        )
+        if decision and experiment_config and experiment_scope and not shadow_enabled:
+            if sol_baseline_member(scope, experiment_config):
+                experiment = "all_sol"
+                if gate != "astra_policy" and model in TIERS:
+                    model = SOL
+            else:
+                experiment = "routed"
 
         would = None
-        if os.path.exists(SHADOW_PATH):
+        if shadow_enabled:
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
             model, effort, speed, gate = ASTRA, None, "default", "shadow(astra)"
 
         # Codex-dry tandem: ONLY while native usage is exhausted (manual flag or
-        # observed quota failure) the triptych is replaced — GLM for frontier
-        # steps, deepseek for the rest. Otherwise luna/sol/astra run untouched.
+        # observed quota failure) the native model ladder is replaced — GLM for frontier
+        # steps, deepseek for the rest. Otherwise luna/terra/sol/astra run untouched.
         dry_reason = native_dry()
+        if dry_reason:
+            experiment = None
         native_model = model
         if dry_reason and model in TIERS:
             model, effort = dry_target(native_model, effort)
@@ -1173,37 +1669,36 @@ class Handler(BaseHTTPRequestHandler):
         # operational fallbacks, rather than a hypothetical classification.
         shown = {"model": model, "effort": effort or (payload.get("reasoning") or {}).get("effort")}
         marker = route_marker(shown["model"], shown["effort"])
-        signature = answer_signature(shown)
+        signature = presentation_signature(payload, shown)
 
-        def apply_route(payload, model, effort):
-            payload["model"] = model
-            if effort:
-                reasoning = payload.get("reasoning")
-                reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-                reasoning["effort"] = effort
-                payload["reasoning"] = reasoning
-            # Explicitly override any Fast preference inherited from the client,
-            # including kill-switch, shadow, and retried fallback requests.
-            payload["service_tier"] = "default"
-            payload["stream"] = True  # the local caller edge requires streaming
-            return payload
+        original_reasoning = (
+            dict(payload["reasoning"]) if isinstance(payload.get("reasoning"), dict) else None
+        )
+        injected_update = None
+        effort_transport = None
 
-        apply_route(payload, model, effort)
+        def apply_route(model, effort):
+            nonlocal injected_update, effort_transport
+            injected_update, effort_transport = apply_route_payload(
+                payload, model, effort, original_reasoning, injected_update
+            )
 
-        out_path = path if path.startswith("/v1") else "/v1" + path
+        apply_route(model, effort)
+
+        out_path = "/v1/responses"
         self._attempts = []
         status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
-            payload, out_path, stream_requested, debug, marker, model, signature)
+            payload, out_path, stream_requested, debug, marker, model, signature, effort)
         retried = False
         fallback = None
         if quota_hit and not dry_reason:
             # Native usage is exhausted: flip to the Go tandem and retry this very
             # call so the turn does not fail (nothing reached the client yet). The
             # flip lasts until the edge says the window reopens, so the first call
-            # after the reset is served by the native triptych again.
+            # after the reset is served by the native native model ladder again.
             mark_native_dry("quota", resets_at=resets_at)
             model, effort = dry_target(native_model, effort)
-            apply_route(payload, model, effort)
+            apply_route(model, effort)
             retried = True
             # The log records the state this call entered, not the one it started
             # in: reading `dry: None` next to `codex_dry(retry)` is how a flip
@@ -1211,14 +1706,15 @@ class Handler(BaseHTTPRequestHandler):
             dry_reason = "quota"
             gate = f"codex_dry(retry):{native_model}"
             marker = route_marker(model, effort)
-            signature = answer_signature({"model": model, "effort": effort})
+            signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature)
+                payload, out_path, stream_requested, debug, marker, model, signature, effort)
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
             dry_reason = "cleared"
-        if model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS:
+        if (model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS
+                and unwritten is not None and other_tandem(model)):
             # Half of the tandem refused this call, so try the sibling model
             # before the turn is lost. The two Go models are metered against
             # separate allowances, and a spent allowance arrives as the same
@@ -1226,12 +1722,12 @@ class Handler(BaseHTTPRequestHandler):
             # live session on 18 September 2026 after the handoff.
             fallback = other_tandem(model)
             model, effort = fallback, tandem_effort(effort, native_model)
-            apply_route(payload, model, effort)
+            apply_route(model, effort)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
-            signature = answer_signature({"model": model, "effort": effort})
+            signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature)
+                payload, out_path, stream_requested, debug, marker, model, signature, effort)
         if unwritten is not None:
             # Every model that could have served this turn refused it, and the
             # refusal was held back only because another attempt might have
@@ -1243,13 +1739,34 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(unwritten)
 
+        final_attempt = None
+        for attempt in reversed(self._attempts):
+            if attempt.get("model") == model and attempt.get("status") == 200:
+                final_attempt = attempt
+                break
+        completed_status = (
+            200 if final_attempt
+            and final_attempt.get("terminal_type") == "response.completed"
+            else status if status != 200 else 502
+        )
+        remember_cache_model(
+            scope, payload, model, completed_status,
+            usage=final_attempt.get("usage") if final_attempt else None,
+            effort=effort,
+        )
+        remember_route_lease(scope, payload, step, decision, completed_status)
         log_line({
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "policy_version": POLICY_VERSION,
             "route_probabilities": decision["probabilities"] if decision else None,
             "chosen_probability": decision["chosen_probability"] if decision else None,
+            "astra_policy": decision["astra_policy"] if decision else None,
+            "base_tier": decision["base_model"] if decision else None,
             "jev_usage": jev_usage,
             "attempts": self._attempts,
+            "decision_source": decision_source,
+            "lease": decision.get("lease") if decision else None,
+            "lease_hit": decision_source == "lease",
             "gate": gate,
             "tier": tier,
             "conf": conf,
@@ -1258,7 +1775,18 @@ class Handler(BaseHTTPRequestHandler):
             "effort": effort,
             "speed": speed,
             "native": native_model,
+            "semantic_model": semantic_model,
+            "experiment": experiment,
+            "experiment_percent": (
+                experiment_config.get("percent") if experiment_config else None
+            ),
             "dry": dry_reason,
+            "routing_scope": decision.get("lease") if decision else "call",
+            "effort_transport": effort_transport,
+            "cache_scope": scope,
+            "cache_state": affinity,
+            "cache_key_present": isinstance(payload.get("prompt_cache_key"), str)
+                                 and bool(payload["prompt_cache_key"].strip()),
             "retried": retried,
             "fallback": fallback,
             "jev_ms": jev_ms,
@@ -1274,10 +1802,13 @@ class Handler(BaseHTTPRequestHandler):
             "digest_len": len(step["digest"]),
             "stripped": stripped,
             "would": would,
-            "task": task[:110],
+            "task_chars": len(task),
         })
 
-    def _forward(self, payload, out_path, stream_requested, debug, marker, model, signature=None):
+    def _forward(
+        self, payload, out_path, stream_requested, debug, marker, model,
+        signature=None, effective_effort=None,
+    ):
         """One relay attempt to the local caller edge, streamed straight back.
 
         Returns (status, out_kind, ctype, quota_hit, unwritten, resets_at).
@@ -1294,7 +1825,7 @@ class Handler(BaseHTTPRequestHandler):
         status = 0
         out_kind = ""
         ctype = ""
-        attempt = {"model": model, "effort": (payload.get("reasoning") or {}).get("effort"),
+        attempt = {"model": model, "effort": effective_effort,
                    "speed": payload.get("service_tier"), "status": None,
                    "terminal_type": None, "usage": None}
         self._attempts.append(attempt)
@@ -1313,18 +1844,12 @@ class Handler(BaseHTTPRequestHandler):
             # streaming request, a 200 response IS an SSE stream: force the
             # outgoing header, because the forwarder picks its parser from it
             # (text/event-stream → SSE relay, application/json → JSON parse).
-            is_sse = ("text/event-stream" in ctype) or (status == 200 and stream_requested)
+            is_sse = status == 200 and (
+                "text/event-stream" in ctype or (not ctype and stream_requested))
             out_kind = ""
 
             if is_sse and stream_requested:
                 out_kind = "sse"
-                cap = None
-                if debug:
-                    try:
-                        cap = open(os.path.join(STATE, "jev-router-debug-stream.log"), "a", encoding="utf-8")
-                        cap.write(f"\n===== {time.strftime('%H:%M:%S')} model={model} =====\n")
-                    except OSError:
-                        cap = None
                 self.send_response(status)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Transfer-Encoding", "chunked")
@@ -1334,12 +1859,14 @@ class Handler(BaseHTTPRequestHandler):
                     chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
                     if not chunk:
                         break
-                    if cap is not None:
+                    if debug:
                         try:
-                            cap.write(chunk.decode("utf-8", "replace"))
-                            cap.flush()
+                            # Capture only transport counters, never generated text,
+                            # tool arguments or raw streams which may contain secrets.
+                            append_private(os.path.join(STATE, "jev-router-debug-stream.log"),
+                                           json.dumps({"model": model, "bytes": len(chunk)}) + "\n")
                         except OSError:
-                            cap = None
+                            pass
                     piece = markerer.feed(chunk).encode("utf-8")
                     if piece:
                         self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
@@ -1348,25 +1875,30 @@ class Handler(BaseHTTPRequestHandler):
                 if piece:
                     self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
                     self.wfile.flush()
+                if not markerer.terminal_type:
+                    piece = b'data: {"type":"error","error":{"message":"upstream stream ended before a terminal event"}}\n\n'
+                    self.wfile.write(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
-                if cap is not None:
-                    cap.close()
             else:
                 out_kind = "json"
                 data = resp.read()
                 out_ctype = ctype or "application/json"
                 head = data[:64].lstrip()
-                if status >= 400 and (status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace"))):
+                if status >= 400:
                     # Held back, not written: the caller decides whether another
                     # model gets this call first. The refusal also carries the
                     # instant the window reopens, which is how long the flip lasts.
-                    return status, out_kind, ctype, True, data, quota_reset_at(resp.headers, data)
+                    quota = bool(status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace")))
+                    return status, out_kind, ctype, quota, data, quota_reset_at(resp.headers, data)
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
                 # non-stream provider path) instead of forwarding raw SSE bytes.
                 if status == 200 and (head.startswith(b"event:") or head.startswith(b"data:")):
                     assembled = assemble_sse(data)
+                    if assembled is None:
+                        status = 502
+                        assembled = {"error": {"message": "upstream stream ended before a terminal event"}}
                     if assembled is not None:
                         attempt["usage"] = usage_counts(assembled.get("usage"))
                         response_status = assembled.get("status")
@@ -1383,6 +1915,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             return status, out_kind, ctype, False, None, None
+        except (OSError, http.client.HTTPException):
+            if self._response_started:
+                raise
+            status = 502
+            data = b'{"error":{"message":"upstream transport unavailable"}}'
+            return status, "json", "application/json", False, data, None
         finally:
             attempt["status"] = status
             if markerer is not None:
@@ -1392,12 +1930,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(LISTEN, Handler)
-    server.daemon_threads = True
-    try:
-        os.chmod(LOG_PATH, 0o600)
-    except OSError:
-        pass
+    server = LocalServer(LISTEN, Handler)
+    protect_logs([LOG_PATH, os.path.join(STATE, "jev-router-debug.jsonl"),
+                  os.path.join(STATE, "jev-router-debug-stream.log")])
     print(f"[jev-router] ready on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()
 

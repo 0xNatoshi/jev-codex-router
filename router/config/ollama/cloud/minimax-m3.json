@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/minimax-m3",
+      "gatewayModel": "ollama-cloud-minimax-m3",
+      "upstreamModel": "minimax-m3",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "MiniMax M3 (Ollama Cloud)",
+      "description": "MiniMax M3 hosted on Ollama Cloud for coding with a 512k context window.",
+      "priority": 22,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 524288,
+      "autoCompact": 470000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "ollama-cloud-auto-tool-choice",
+      "compHash": "ollama-cloud-minimax-m3-v3"
+    }
+  ]
+}

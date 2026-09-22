@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/deepseek-v4-flash",
+      "gatewayModel": "ollama-cloud-deepseek-v4-flash",
+      "upstreamModel": "deepseek-v4-flash:cloud",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash (Ollama Cloud)",
+      "description": "DeepSeek V4 Flash hosted on Ollama Cloud, a 284B Mixture-of-Experts model with 13B activated parameters, tool support, reasoning, and a 1M-token context window.",
+      "priority": 26,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "No thinking for fast, intuitive answers"
+        },
+        {
+          "effort": "high",
+          "description": "Thinking for careful logical analysis"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning effort for the hardest problems"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "ollama-cloud",
+      "compHash": "ollama-cloud-deepseek-v4-flash-v1"
+    }
+  ]
+}

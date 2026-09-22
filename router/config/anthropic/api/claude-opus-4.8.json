@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "anthropic-api/claude-opus-4.8",
+      "gatewayModel": "anthropic-api-claude-opus-4-8",
+      "upstreamModel": "claude-opus-4-8",
+      "provider": "anthropic-api",
+      "listed": true,
+      "displayName": "Claude Opus 4.8 (API)",
+      "description": "Claude Opus 4.8 through the separately billed Anthropic API for complex agentic coding.",
+      "priority": 9,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Minimal thinking, fastest responses"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced adaptive thinking"
+        },
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning for agentic work"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended thinking, recommended for coding"
+        },
+        {
+          "effort": "max",
+          "description": "Unconstrained thinking on every response"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "anthropic-reasoning",
+      "supportsImageDetailOriginal": true,
+      "compHash": "anthropic-api-claude-opus-4-8-v2"
+    }
+  ]
+}

@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import jev_server as jev
+from routing_policy import route_choice
 
 COMPLETED = (
     b'event: response.completed\n'
@@ -38,6 +39,16 @@ MISMATCHED = (
 )
 
 
+def jev_answer(tier, depth, confidence, lease="one_call"):
+    pair = route_choice(tier, depth, lease=lease)
+    return {"answers": {
+        "astra_policy": {"choice": pair["astra_policy"], "confidence": confidence},
+        "model": {"choice": pair["model"], "confidence": confidence},
+        "effort": {"choice": pair["effort"], "confidence": confidence},
+        "lease": {"choice": pair["lease"], "confidence": confidence},
+    }}
+
+
 class Edge(BaseHTTPRequestHandler):
     """Stands in for the router's local caller edge."""
 
@@ -46,6 +57,7 @@ class Edge(BaseHTTPRequestHandler):
     refuse = ()
     body = COMPLETED
     reset_at = 0
+    refuse_status = 429
 
     def log_message(self, *args):
         pass
@@ -60,8 +72,10 @@ class Edge(BaseHTTPRequestHandler):
             # The shape the edge answers an exhausted allowance with: a JSON error
             # whose text matches the quota detector, and no content type that
             # would make the relay treat it as a stream.
-            data = json.dumps({"error": {"message": "rate limit reached for this model"}}).encode()
-            self.send_response(429)
+            message = ("rate limit reached for this model" if self.refuse_status == 429
+                       else "temporarily unavailable")
+            data = json.dumps({"error": {"message": message}}).encode()
+            self.send_response(self.refuse_status)
             self.send_header("Content-Type", "application/json")
             if type(self).reset_at:
                 self.send_header("x-codex-primary-reset-at", str(int(type(self).reset_at)))
@@ -76,16 +90,18 @@ class Edge(BaseHTTPRequestHandler):
 
 class TandemHandoff(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(jev, "local_secret", return_value="fixture-local"))
         Edge.attempts = []
         Edge.payloads = []
         Edge.refuse = ()
         Edge.body = COMPLETED
         Edge.reset_at = 0
+        Edge.refuse_status = 429
         # Tests must not read the installed sentinels, write the live decision
         # log, or depend on the user's current fallback model configuration.
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         for name in ("OFF_PATH", "SHADOW_PATH", "DEBUG_PATH", "SIGNATURE_PATH",
-                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH"):
+                     "LOG_PATH", "DRY_STATE_PATH", "DRY_MANUAL_PATH", "SOL_BASELINE_PATH"):
             self.enterContext(mock.patch.object(jev, name, os.path.join(tmp, name)))
         self.enterContext(mock.patch.object(jev, "STATE", tmp))
         self.enterContext(mock.patch.object(jev, "GO_STANDARD", "fixture/standard"))
@@ -132,7 +148,7 @@ class TandemHandoff(unittest.TestCase):
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.server.server_address[1]}/v1/responses",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer fixture-local"},
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -153,6 +169,7 @@ class TandemHandoff(unittest.TestCase):
             headers = [
                 b"POST /v1/responses HTTP/1.1",
                 b"Host: localhost",
+                b"Authorization: Bearer fixture-local",
                 b"Content-Type: application/json",
             ]
             if content_length is not None:
@@ -173,7 +190,7 @@ class TandemHandoff(unittest.TestCase):
         return status, response_body
 
     def test_rejects_an_oversized_response_body_before_forwarding(self):
-        status, body = self.raw_post(content_length=jev.RESP_MAX_BYTES + 1)
+        status, body = self.raw_post(content_length=jev.RESPONSE_MAX_BYTES + 1)
         self.assertEqual(status, 413)
         self.assertIn(b"too large", body)
         self.assertEqual(Edge.attempts, [])
@@ -186,48 +203,121 @@ class TandemHandoff(unittest.TestCase):
 
     def test_rejects_a_response_without_content_length(self):
         status, body = self.raw_post()
-        self.assertEqual(status, 411)
-        self.assertIn(b"Content-Length", body)
+        self.assertEqual(status, 400)
+        self.assertIn(b"one Content-Length required", body)
         self.assertEqual(Edge.attempts, [])
 
     def test_rejects_chunked_response_bodies(self):
         status, body = self.raw_post(transfer_encoding="chunked", body=b"0\r\n\r\n")
-        self.assertEqual(status, 501)
-        self.assertIn(b"chunked", body)
+        self.assertEqual(status, 400)
+        self.assertIn(b"one Content-Length required", body)
         self.assertEqual(Edge.attempts, [])
 
     def test_a_refused_tandem_call_is_retried_on_the_sibling(self):
         Edge.refuse = (jev.GO_FRONTIER,)
-        status, body = self.call(service_tier="priority")
+        canonical = [
+            {"type": "message", "role": "user", "content": "Original evidence."},
+            {"type": "function_call", "call_id": "xmesh", "name": "xmesh_inspect",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "xmesh", "output": "full result"},
+            {"type": "message", "role": "user", "content": "Continue"},
+        ]
+        status, body = self.call(service_tier="priority", input=canonical)
         self.assertEqual(status, 200, body)
         self.assertEqual(
             [model for model, _effort in Edge.attempts],
             [jev.GO_FRONTIER, jev.GO_STANDARD],
         )
+        self.assertEqual([payload["input"] for payload in Edge.payloads],
+                         [canonical, canonical])
         # The depth survives the switch, and both attempts carry a rung the Go
         # models declare.
         self.assertEqual({effort for _model, effort in Edge.attempts}, {"high"})
         self.assertEqual([p["service_tier"] for p in Edge.payloads],
                          ["default", "default"])
 
+    def test_nonquota_service_failure_is_held_before_retry(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        Edge.refuse_status = 503
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                status, body = self.call(stream=stream)
+                self.assertEqual(status, 200, body)
+                self.assertNotIn(b"temporarily unavailable", body)
+                self.assertIn(b"completed", body)
+
+    def test_single_fallback_does_not_retry_itself(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        Edge.refuse_status = 503
+        with mock.patch.object(jev, "GO_TANDEM", (jev.GO_FRONTIER,)):
+            status, _ = self.call()
+        self.assertEqual(status, 503)
+        self.assertEqual(len(Edge.attempts), 1)
+
+    def test_incomplete_and_failed_nonstream_responses_keep_their_contract(self):
+        for terminal in ("incomplete", "failed"):
+            with self.subTest(terminal=terminal):
+                response = {"id": "r", "status": terminal, "output": [],
+                            "incomplete_details": {"reason": "max_output_tokens"}}
+                Edge.body = ("data: " + json.dumps(
+                    {"type": "response." + terminal, "response": response}) + "\n\n").encode()
+                status, body = self.call()
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), response)
+
+    def test_nonstream_truncated_stream_becomes_explicit_error(self):
+        Edge.body = b'data: {"type":"response.created","response":{"id":"r"}}\n\n'
+        status, body = self.call()
+        self.assertEqual(status, 502)
+        self.assertIn("error", json.loads(body))
+
+    def test_structured_outputs_never_receive_a_display_header(self):
+        with open(jev.SIGNATURE_PATH, "w"):
+            pass
+        item = {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"ok":true}'}]}
+        Edge.body = ("data: " + json.dumps({"type": "response.completed",
+                     "response": {"id": "r", "status": "completed", "output": [item]}})
+                     + "\n\n").encode()
+        status, body = self.call(text={"format": {"type": "json_schema", "name": "fixture"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(json.loads(body)["output"][0]["content"][0]["text"]),
+                         {"ok": True})
+
     def test_native_calls_replace_client_fast_and_max_with_the_jev_decision(self):
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
         for tier, depth, client_speed in ((jev.LUNA, "low", "priority"),
+                                         (jev.TERRA, "high", "priority"),
                                          (jev.LUNA, "medium", "fast"),
                                          (jev.SOL, "high", "priority"),
                                          (jev.ASTRA, "xhigh", "fast")):
             with self.subTest(tier=tier, depth=depth), mock.patch.object(
-                jev, "call_jev_routed", return_value={"answers": {
-                    "route": {"choice": f"{tier}:{depth}", "confidence": 0.1},
-                }}
+                jev, "call_jev_routed", return_value=jev_answer(tier, depth, 0.1)
             ):
                 status, body = self.call(service_tier=client_speed,
-                                         reasoning={"effort": "max", "summary": "auto"})
+                                         reasoning={"effort": "max", "summary": "auto"},
+                                         input=[{
+                                             "type": "message",
+                                             "role": "user",
+                                             "content": [{"type": "input_text",
+                                                          "text": f"say OK ({tier}:{depth})"}],
+                                         }])
                 self.assertEqual(status, 200, body)
                 sent = Edge.payloads[-1]
                 self.assertEqual(sent["model"], tier)
-                self.assertEqual(sent["reasoning"], {"effort": depth, "summary": "auto"})
+                if tier == jev.ASTRA:
+                    self.assertEqual(sent["reasoning"], {
+                        "effort": "max", "summary": "auto"
+                    })
+                    self.assertEqual(sent["input"][0], {
+                        "type": "configuration_update",
+                        "reasoning": {"effort": depth},
+                    })
+                else:
+                    self.assertEqual(sent["reasoning"], {
+                        "effort": depth, "summary": "auto"
+                    })
                 self.assertEqual(sent["service_tier"], "default")
                 self.assertTrue(sent["stream"])
 
@@ -247,9 +337,11 @@ class TandemHandoff(unittest.TestCase):
     def test_compaction_is_judged_instead_of_pinned_to_sol_high(self):
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
-        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": f"{jev.ASTRA}:low", "confidence": 0.2},
-        }}) as judge:
+        with mock.patch.object(
+            jev,
+            "call_jev_routed",
+            return_value=jev_answer(jev.ASTRA, "low", 0.2),
+        ) as judge:
             status, body = self.call(input="You are creating a lossy continuation checkpoint")
         self.assertEqual(status, 200, body)
         judge.assert_called_once()
@@ -324,9 +416,11 @@ class TandemHandoff(unittest.TestCase):
             pass
         jev.native_dry = lambda: None
         jev.load_key = lambda: "fixture-key"
-        with mock.patch.object(jev, "call_jev_routed", return_value={"answers": {
-            "route": {"choice": f"{jev.LUNA}:low", "confidence": 0.9},
-        }}):
+        with mock.patch.object(
+            jev,
+            "call_jev_routed",
+            return_value=jev_answer(jev.LUNA, "low", 0.9),
+        ):
             status, body = self.call(reasoning={"effort": "high"})
         self.assertEqual(status, 200)
         actual = jev.answer_signature({"model": jev.ASTRA, "effort": "high"})
@@ -384,9 +478,17 @@ class TandemHandoff(unittest.TestCase):
             try:
                 Edge.refuse = (jev.ASTRA,)
                 Edge.reset_at = time.time() + 1800
-                status, body = self.call()
+                status, body = self.call(reasoning={"effort": "max"})
                 self.assertEqual(status, 200, body)
                 self.assertEqual([model for model, _ in Edge.attempts], [jev.ASTRA, jev.GO_FRONTIER])
+                self.assertEqual(
+                    Edge.payloads[0]["input"][0].get("type"), "configuration_update"
+                )
+                self.assertFalse(any(
+                    item.get("type") == "configuration_update"
+                    for item in Edge.payloads[1]["input"]
+                    if isinstance(item, dict)
+                ))
                 with open(state, encoding="utf-8") as fh:
                     flipped = json.load(fh)
                 self.assertAlmostEqual(

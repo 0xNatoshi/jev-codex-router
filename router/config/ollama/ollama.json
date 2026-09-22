@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "ollama-cloud",
+      "displayName": "Ollama Cloud",
+      "kind": "openai-compatible",
+      "ownedBy": "ollama",
+      "baseUrl": "https://ollama.com/v1",
+      "baseUrlEnv": "OLLAMA_CLOUD_BASE_URL",
+      "credential": {
+        "environment": [
+          "OLLAMA_API_KEY",
+          "OLLAMA_CLOUD_API_KEY"
+        ],
+        "file": "ollama-cloud-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-ollama-cloud"
+        ],
+        "prompt": "Ollama Cloud API key"
+      }
+    }
+  ]
+}

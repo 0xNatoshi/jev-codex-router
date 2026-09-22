@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/qwen3.8-flash",
+      "gatewayModel": "nousresearch-qwen3-8-flash",
+      "upstreamModel": "qwen/qwen3.8-flash",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Qwen3.8 Flash (Nous Research)",
+      "description": "Qwen3.8 Flash through the Nous Portal. Fast tier with vision input.",
+      "priority": 84,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "nousresearch-qwen3-8-flash-v1"
+    }
+  ]
+}

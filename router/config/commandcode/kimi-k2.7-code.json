@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/kimi-k2.7-code",
+      "gatewayModel": "commandcode-kimi-k2-7-code",
+      "upstreamModel": "moonshotai/Kimi-K2.7-Code",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Kimi K2.7 Code (Command Code)",
+      "description": "Kimi K2.7 Code through the Command Code Provider API.",
+      "priority": 105,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 256000,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "commandcode-kimi-k2-7-code-v1"
+    }
+  ]
+}

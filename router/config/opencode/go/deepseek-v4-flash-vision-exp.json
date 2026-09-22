@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/deepseek-v4-flash-vision-exp",
+      "gatewayModel": "opencode-go-deepseek-v4-flash-vision-exp",
+      "upstreamModel": "deepseek-v4-flash-vision-exp",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash Vision Exp (opencode Go)",
+      "description": "DeepSeek V4 Flash Vision Exp through the opencode Go subscription; image understanding and tool calls over the Chat Completions route documented by OpenCode.",
+      "priority": 38,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "opencode-go-deepseek-v4-flash-vision-exp-v1"
+    }
+  ]
+}

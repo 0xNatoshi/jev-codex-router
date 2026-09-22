@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+# The name on PATH may be a symlink to this script, so walk the chain before
+# locating the repository root, and resolve that root physically: `dirname $0`
+# alone points beside the link, and a logical `..` climbs out of a linked
+# directory to a path node does not recognise as a module's own when it guards
+# main, so the command would quietly do nothing.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+repo_dir=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd -P)
+cd "$repo_dir"
+case "${MODEL_ROUTER_TARGET:-codex}" in
+  codex) node src/config-manager.mjs status ;;
+  dsh) node src/dsh-config-manager.mjs status ;;
+  gemini) node src/gemini-config-manager.mjs status ;;
+  cursor) node src/cursor-config-manager.mjs status ;;
+  claude) node src/claude-code-config-manager.mjs status ;;
+  openclaw) node src/openclaw-config-manager.mjs status ;;
+  *) echo "MODEL_ROUTER_TARGET must be codex, dsh, gemini, cursor, claude, or openclaw." >&2; exit 2 ;;
+esac
+node src/service.mjs status
+node --input-type=module -e 'import { PORTS } from "./src/paths.mjs"; fetch(`http://127.0.0.1:${PORTS.router}/health`).then(async r=>{console.log(await r.text()); process.exitCode=r.ok?0:1}).catch(()=>{console.log(JSON.stringify({ok:false,router:"unavailable"})); process.exitCode=1})'

@@ -142,7 +142,7 @@ class QuotaReset(unittest.TestCase):
 class DryTandem(unittest.TestCase):
     def test_frontier_steps_go_to_glm_and_the_rest_to_deepseek(self):
         self.assertEqual(jev.dry_target(jev.ASTRA, "high")[0], jev.GO_FRONTIER)
-        for tier in (jev.LUNA, jev.SOL):
+        for tier in (jev.LUNA, jev.TERRA, jev.SOL):
             self.assertEqual(jev.dry_target(tier, "high")[0], jev.GO_STANDARD)
 
     def test_the_tandem_never_receives_a_rung_its_model_cannot_serve(self):
@@ -172,8 +172,10 @@ class DryTandem(unittest.TestCase):
             self.assertEqual(jev.tandem_effort(once, jev.SOL), once)
 
     def test_the_fallback_is_the_sibling_model(self):
-        self.assertEqual(jev.other_tandem(jev.GO_STANDARD), jev.GO_FRONTIER)
-        self.assertEqual(jev.other_tandem(jev.GO_FRONTIER), jev.GO_STANDARD)
+        with mock.patch.object(jev, "GO_TANDEM", ("fixture/a", "fixture/b")):
+            self.assertEqual(jev.other_tandem("fixture/a"), "fixture/b")
+        with mock.patch.object(jev, "GO_TANDEM", ("fixture/a",)):
+            self.assertIsNone(jev.other_tandem("fixture/a"))
 
 
 class TandemRetry(unittest.TestCase):
@@ -274,15 +276,62 @@ class JevTaskInput(unittest.TestCase):
                      "content": [{"type": "output_text", "text": "Reponse"}]}
         short = self.state([assistant, self.user_item(self.ASK)])
         long_thread = self.state(history + [assistant, self.user_item(self.ASK)])
-        self.assertEqual(short, long_thread)
+        self.assertNotIn("n_items", long_thread)
+        self.assertEqual(short["task"], long_thread["task"])
+        self.assertLessEqual(len(json.dumps(long_thread)), 1100)
+
+    def test_a_user_turn_contains_no_empty_or_historical_fields(self):
+        assistant = {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "Old answer"}]}
+        self.assertEqual(
+            self.state([assistant, self.user_item(self.ASK)]),
+            {"task": self.ASK, "step": "user_turn", "previous_proposal": "Old answer"},
+        )
+
+    def test_a_context_dependent_ask_gets_one_bounded_preceding_task(self):
+        state = self.state([
+            self.user_item("Analyse le routeur, corrige son cache puis valide les tests."),
+            self.user_item(self.PLUGINS),
+            self.user_item("Alors go ?"),
+        ])
+        self.assertEqual(state["task"], "Alors go ?")
+        self.assertEqual(
+            state["active_task"],
+            "Analyse le routeur, corrige son cache puis valide les tests.",
+        )
+        self.assertLessEqual(len(state["active_task"]), jev.CONTEXT_TASK_CHARS)
+
+    def test_short_asks_pay_only_for_bounded_context_without_guessing_intent(self):
+        state = self.state([
+            self.user_item("Refactor the entire authentication service."),
+            self.user_item("List three files."),
+        ])
+        self.assertLessEqual(len(state["active_task"]), jev.CONTEXT_TASK_CHARS)
+
+    def test_a_goal_summary_wins_for_continue_without_sending_the_envelope(self):
+        goal = (
+            '<codex_internal_context source="goal">'
+            "Implement and verify the cache-safe model router."
+            "</codex_internal_context>"
+        )
+        state = self.state([
+            self.user_item("An older unrelated request."),
+            self.user_item(goal + "\ncontinue"),
+        ])
+        self.assertEqual(state["task"], "continue")
+        self.assertEqual(
+            state["active_task"],
+            "Implement and verify the cache-safe model router.",
+        )
+        self.assertNotIn("codex_internal_context", json.dumps(state))
 
     def test_only_the_last_tool_output_travels_and_only_as_a_digest(self):
         output = {"type": "function_call_output", "output": "ok\n" + ("ligne\n" * 5_000)}
         state = self.state([self.user_item(self.ASK), output])
-        tail = state["step"]["last_tool_output_tail"]
-        self.assertEqual(state["step"]["type"], "tool_step")
+        tail = state["tool_result_tail"]
+        self.assertEqual(state["step"], "tool_step")
         self.assertEqual(len(tail), jev.DIGEST_CHARS)
-        self.assertNotIn("contains_error", state["step"])
+        self.assertNotIn("contains_error", state)
 
     def test_the_tool_name_is_linked_by_call_id_without_sending_arguments(self):
         state = self.state([
@@ -291,14 +340,15 @@ class JevTaskInput(unittest.TestCase):
              "name": "exec_command", "arguments": "private arguments"},
             {"type": "function_call_output", "call_id": "call_1", "output": "done"},
         ])
-        self.assertEqual(state["step"]["tool_call"], {"name": "exec_command"})
+        self.assertEqual(state["tool"], "exec_command")
         self.assertNotIn("private arguments", json.dumps(state))
 
     def test_the_assistant_side_is_bounded(self):
         assistant = {"type": "message", "role": "assistant",
                      "content": [{"type": "output_text", "text": "a" * 4_000}]}
-        state = self.state([self.user_item(self.ASK), assistant])
-        self.assertEqual(len(state["previous_assistant"]), 240)
+        output = {"type": "function_call_output", "output": "done"}
+        state = self.state([self.user_item(self.ASK), assistant, output])
+        self.assertEqual(len(state["intent_tail"]), jev.INTENT_CHARS)
 
 
 if __name__ == "__main__":

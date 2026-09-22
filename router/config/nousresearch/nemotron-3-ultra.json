@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/nemotron-3-ultra",
+      "gatewayModel": "nousresearch-nemotron-3-ultra",
+      "upstreamModel": "nvidia/nemotron-3-ultra-550b-a55b",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Nemotron 3 Ultra (Nous Research)",
+      "description": "NVIDIA Nemotron 3 Ultra 550B through the Nous Portal.",
+      "priority": 71,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 512288,
+      "autoCompact": 461000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-nemotron-3-ultra-v1"
+    }
+  ]
+}

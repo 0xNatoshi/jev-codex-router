@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "commandcode/kimi-k3",
+      "gatewayModel": "commandcode-kimi-k3",
+      "upstreamModel": "moonshotai/Kimi-K3",
+      "provider": "commandcode",
+      "listed": true,
+      "displayName": "Kimi K3 (Command Code)",
+      "description": "Kimi K3 through the Command Code Provider API.",
+      "priority": 104,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-k3",
+      "compHash": "commandcode-kimi-k3-v2"
+    }
+  ]
+}

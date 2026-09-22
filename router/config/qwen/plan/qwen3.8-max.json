@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "qwen-plan/qwen3.8-max",
+      "gatewayModel": "qwen-plan-qwen3-8-max",
+      "upstreamModel": "qwen3.8-max",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "Qwen3.8 Max (Plan)",
+      "description": "Qwen3.8 Max through an Alibaba Model Studio Token or Coding Plan subscription; the newest flagship tier with vision input.",
+      "priority": 12,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 983616,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "qwen-plan",
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-8-max-v2"
+    }
+  ]
+}

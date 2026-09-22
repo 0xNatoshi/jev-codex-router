@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "deepseek/deepseek-chat",
+      "gatewayModel": "deepseek-legacy-chat",
+      "upstreamModel": "deepseek-chat",
+      "provider": "deepseek",
+      "listed": false,
+      "requestProfile": "deepseek-nonthinking"
+    }
+  ]
+}

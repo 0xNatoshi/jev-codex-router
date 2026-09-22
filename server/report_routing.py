@@ -6,7 +6,7 @@ Reads the live decision log written by `server/jev_server.py`
 `at`, `gate`, `tier`, `conf`, `depth`, `model`, `effort`, `speed`, `jev_ms`,
 `total_ms`, ...) and prints, over a window of N days:
 
-  - the distribution of the models/tiers served (luna / sol / astra, plus the
+  - the distribution of the models/tiers served (luna / terra / sol / astra, plus the
     Codex-dry tandem when it took over);
   - the share of turns served by the cheapest tier (luna);
   - the gates the policy went through (`apply`, `hold(sol)`, `hold(luna_step)`,
@@ -59,11 +59,16 @@ import json
 import os
 import statistics
 import sys
+from contextlib import ExitStack
+from itertools import chain
+from routing_policy import POLICY_VERSION
 
 LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
 BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
 
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
+TERRA = "gpt-5.6-terra"
+NATIVE_TIERS = (LUNA, TERRA, SOL, ASTRA)
 
 # Prices per 1M tokens (input, output, cached input, cache write), short context,
 # Sep 2026 — kept identical to poc/backtest_savings.py so the two tools agree.
@@ -82,10 +87,11 @@ API_FAST_X = 2.0
 # 1,616,250 output tokens.
 MIX = {"input": 2_886_560, "cached": 2_836_607, "output": 6_819}
 
-# Short names of the native triptych, then the tandem family. Anything else is
+# Short names of the native native model ladder, then the tandem family. Anything else is
 # reported under its own leaf name.
 SHORT = {
     LUNA: "luna",
+    TERRA: "terra",
     SOL: "sol",
     ASTRA: "astra",
     "opencode-go/deepseek-v4.1-flash": "tandem",
@@ -129,7 +135,7 @@ def measured_usage(entries):
             continue
         for attempt in attempts:
             model = attempt.get("model")
-            if model not in CREDIT_RATES:
+            if model not in NATIVE_TIERS:
                 continue
             report["native_attempts"] += 1
             usage = attempt.get("usage")
@@ -144,6 +150,250 @@ def measured_usage(entries):
     for key in ("routed_credits", "all_sol_credits", "all_astra_credits"):
         report[key] = round(report[key], 6)
     return report
+
+
+def prompt_cache_usage(entries):
+    """Observed cache reads plus model switching, grouped by private session hash."""
+    total_input = total_cached = observed = unknown = hits = 0
+    total_written = write_observed = 0
+    rows = {}
+    scopes = set()
+    last_model = {}
+    seen_models = {}
+    switches = revisits = 0
+    switch_observed = switch_unknown = switch_hits = 0
+    switch_input = switch_cached = 0
+    revisit_observed = revisit_unknown = revisit_hits = 0
+    revisit_input = revisit_cached = 0
+
+    for entry in entries:
+        scope = (
+            entry.get("cache_scope")
+            if entry.get("cache_key_present") is not False
+            else None
+        )
+        selected = entry.get("native")
+        switched = revisited = False
+        if isinstance(scope, str) and scope:
+            scopes.add(scope)
+            if selected in NATIVE_TIERS:
+                previous = last_model.get(scope)
+                seen = seen_models.setdefault(scope, set())
+                if previous is not None and selected != previous:
+                    switched = True
+                    switches += 1
+                    if selected in seen:
+                        revisited = True
+                        revisits += 1
+                seen.add(selected)
+                last_model[scope] = selected
+
+        attempts = entry.get("attempts")
+        if not isinstance(attempts, list):
+            if switched:
+                switch_unknown += 1
+                if revisited:
+                    revisit_unknown += 1
+            continue
+        for attempt in attempts:
+            model = attempt.get("model")
+            if model not in NATIVE_TIERS:
+                continue
+            row = rows.setdefault(model, {
+                "observed_attempts": 0, "unknown_attempts": 0, "hit_attempts": 0,
+                "input_tokens": 0, "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0, "write_observed_attempts": 0,
+                "sessions": set(),
+            })
+            usage = attempt.get("usage")
+            inp = usage.get("input_tokens") if isinstance(usage, dict) else None
+            cached = usage.get("cached_input_tokens") if isinstance(usage, dict) else None
+            if (isinstance(inp, bool) or not isinstance(inp, int) or inp < 0
+                    or isinstance(cached, bool) or not isinstance(cached, int)
+                    or cached < 0 or cached > inp):
+                unknown += 1
+                row["unknown_attempts"] += 1
+                continue
+            observed += 1
+            total_input += inp
+            total_cached += cached
+            row["observed_attempts"] += 1
+            row["input_tokens"] += inp
+            row["cached_input_tokens"] += cached
+            written = usage.get("cache_write_input_tokens")
+            if isinstance(written, int) and not isinstance(written, bool) and written >= 0:
+                total_written += written
+                write_observed += 1
+                row["cache_write_input_tokens"] += written
+                row["write_observed_attempts"] += 1
+            if cached:
+                hits += 1
+                row["hit_attempts"] += 1
+            if isinstance(scope, str) and scope:
+                row["sessions"].add(scope)
+
+        if switched:
+            selected_attempt = next(
+                (attempt for attempt in attempts if attempt.get("model") == selected),
+                None,
+            )
+            usage = selected_attempt.get("usage") if isinstance(selected_attempt, dict) else None
+            inp = usage.get("input_tokens") if isinstance(usage, dict) else None
+            cached = usage.get("cached_input_tokens") if isinstance(usage, dict) else None
+            valid = (
+                not isinstance(inp, bool)
+                and isinstance(inp, int)
+                and inp >= 0
+                and not isinstance(cached, bool)
+                and isinstance(cached, int)
+                and 0 <= cached <= inp
+            )
+            if valid:
+                switch_observed += 1
+                switch_input += inp
+                switch_cached += cached
+                switch_hits += int(cached > 0)
+                if revisited:
+                    revisit_observed += 1
+                    revisit_input += inp
+                    revisit_cached += cached
+                    revisit_hits += int(cached > 0)
+            else:
+                switch_unknown += 1
+                if revisited:
+                    revisit_unknown += 1
+
+    for row in rows.values():
+        row["sessions"] = len(row["sessions"])
+        row["hit_rate_pct"] = (
+            round(100.0 * row["hit_attempts"] / row["observed_attempts"], 1)
+            if row["observed_attempts"] else None
+        )
+        row["cached_share_pct"] = (
+            round(100.0 * row["cached_input_tokens"] / row["input_tokens"], 1)
+            if row["input_tokens"] else None
+        )
+
+    return {
+        "tracked_sessions": len(scopes),
+        "route_switches": switches,
+        "model_revisits": revisits,
+        "switch_cache": {
+            "observed": switch_observed,
+            "unknown": switch_unknown,
+            "hit_attempts": switch_hits,
+            "input_tokens": switch_input,
+            "cached_input_tokens": switch_cached,
+            "hit_rate_pct": (
+                round(100.0 * switch_hits / switch_observed, 1)
+                if switch_observed else None
+            ),
+            "cached_share_pct": (
+                round(100.0 * switch_cached / switch_input, 1)
+                if switch_input else None
+            ),
+        },
+        "revisit_cache": {
+            "observed": revisit_observed,
+            "unknown": revisit_unknown,
+            "hit_attempts": revisit_hits,
+            "input_tokens": revisit_input,
+            "cached_input_tokens": revisit_cached,
+            "hit_rate_pct": (
+                round(100.0 * revisit_hits / revisit_observed, 1)
+                if revisit_observed else None
+            ),
+            "cached_share_pct": (
+                round(100.0 * revisit_cached / revisit_input, 1)
+                if revisit_input else None
+            ),
+        },
+        "observed_attempts": observed,
+        "unknown_attempts": unknown,
+        "hit_attempts": hits,
+        "hit_rate_pct": round(100.0 * hits / observed, 1) if observed else None,
+        "input_tokens": total_input,
+        "cached_input_tokens": total_cached,
+        "cache_write_input_tokens": total_written,
+        "write_observed_attempts": write_observed,
+        "cached_share_pct": (
+            round(100.0 * total_cached / total_input, 1) if total_input else None
+        ),
+        "by_model": rows,
+    }
+
+
+def routing_efficiency(entries):
+    """Paid router decisions avoided by leases, using observed Jev usage only."""
+    jev_decisions = lease_hits = jev_input = 0
+    sources = {}
+    leases = {}
+    for entry in entries:
+        source = entry.get("decision_source") or "legacy"
+        sources[source] = sources.get(source, 0) + 1
+        lease = entry.get("lease")
+        if lease:
+            leases[lease] = leases.get(lease, 0) + 1
+        if source == "jev":
+            jev_decisions += 1
+        if source == "lease" or entry.get("lease_hit") is True:
+            lease_hits += 1
+        usage = entry.get("jev_usage")
+        if isinstance(usage, dict):
+            value = usage.get("input_tokens", usage.get("inputTokens"))
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                jev_input += value
+    judged = jev_decisions + lease_hits
+    return {
+        "jev_decisions": jev_decisions,
+        "lease_hits": lease_hits,
+        "decision_calls_avoided_pct": (
+            round(100.0 * lease_hits / judged, 1) if judged else None
+        ),
+        "observed_jev_input_tokens": jev_input,
+        "sources": sources,
+        "leases": leases,
+    }
+
+
+def experiment_comparison(entries):
+    """Observed routed-vs-all-Sol cohort metrics; no equal-quality claim."""
+    cohorts = {}
+    for name in ("routed", "all_sol"):
+        selected = [
+            entry for entry in entries
+            if entry.get("experiment") == name
+            and entry.get("cache_key_present") is not False
+        ]
+        if not selected:
+            continue
+        usage = measured_usage(selected)
+        cache = prompt_cache_usage(selected)
+        efficiency = routing_efficiency(selected)
+        success = sum(1 for entry in selected if entry.get("status") == 200)
+        cohorts[name] = {
+            "turns": len(selected),
+            "sessions": len({
+                entry.get("cache_scope") for entry in selected if entry.get("cache_scope")
+            }),
+            "success_pct": round(100.0 * success / len(selected), 1),
+            "routed_credits": usage["routed_credits"],
+            "priced_attempts": usage["priced_attempts"],
+            "unknown_attempts": usage["unknown_attempts"],
+            "cached_share_pct": cache["cached_share_pct"],
+            "route_switches": cache["route_switches"],
+            "jev_decisions": efficiency["jev_decisions"],
+            "lease_hits": efficiency["lease_hits"],
+            "jev_input_tokens": efficiency["observed_jev_input_tokens"],
+        }
+    return {
+        "active": bool(cohorts),
+        "cohorts": cohorts,
+        "note": (
+            "Stable hashed-session cohorts; observed traffic only. Compare quality and "
+            "completion outcomes before interpreting cost."
+        ),
+    }
 
 
 def price_key(model):
@@ -203,12 +453,16 @@ def load_entries(path, days, now=None):
     now = now or datetime.datetime.now()
     cut = now - datetime.timedelta(days=days)
     entries, stats = [], {"lines": 0, "unparsable": 0, "undated": 0, "out_of_window": 0}
-    try:
-        handle = open(path, encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise SystemExit(f"cannot read the live log {path}: {exc}")
-    with handle as fh:
-        for line in fh:
+    with ExitStack() as stack:
+        handles = []
+        for candidate in (str(path) + ".1", path):
+            try:
+                handles.append(stack.enter_context(open(candidate, encoding="utf-8", errors="replace")))
+            except FileNotFoundError:
+                continue
+        if not handles:
+            raise SystemExit(f"cannot read the live log {path}")
+        for line in chain.from_iterable(handles):
             line = line.strip()
             if not line:
                 continue
@@ -216,6 +470,9 @@ def load_entries(path, days, now=None):
             try:
                 entry = json.loads(line)
             except ValueError:
+                stats["unparsable"] += 1
+                continue
+            if not isinstance(entry, dict):
                 stats["unparsable"] += 1
                 continue
             at = parse_at(entry.get("at"))
@@ -247,7 +504,7 @@ def percentile(values, pct):
     return values[idx]
 
 
-def summarize(entries, days, stats, log_path, backtest_path=None):
+def summarize(entries, days, stats, log_path, backtest_path=None, policy=None):
     total = len(entries)
     units = unit_costs()
     models, gates, tiers, steps = {}, {}, {}, {}
@@ -261,7 +518,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         model = entry.get("model") or "(none)"
         conf = entry.get("conf")
         served = entry.get("tier")
-        if model in (LUNA, SOL, ASTRA):
+        if model in NATIVE_TIERS:
             natives += 1
         elif SHORT.get(model) == "tandem":
             dry += 1
@@ -281,7 +538,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         else:
             row["cost_units"] += unit
             real_units += unit
-            if model in (LUNA, SOL, ASTRA):
+            if model in NATIVE_TIERS:
                 native_units += unit
         gates[entry.get("gate") or "(none)"] = gates.get(entry.get("gate") or "(none)", 0) + 1
         tier_key = served if served is not None else "(none)"
@@ -339,6 +596,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
             "from": entries[0]["_at"].isoformat(timespec="seconds") if entries else None,
             "to": entries[-1]["_at"].isoformat(timespec="seconds") if entries else None,
             "turns": total,
+            "policy": policy,
             "log_lines": stats["lines"],
             "skipped": {"out_of_window": stats["out_of_window"],
                         "undated": stats["undated"],
@@ -373,6 +631,15 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
         "cost": cost,
         "native_cost": native_cost,
         "measured_usage": measured_usage(entries),
+        "prompt_cache": prompt_cache_usage(entries),
+        "routing_efficiency": routing_efficiency(entries),
+        "experiment": experiment_comparison(entries),
+        "policy_versions": {
+            version: sum(1 for entry in entries if entry.get("policy_version") == version)
+            for version in sorted({
+                entry.get("policy_version") for entry in entries if entry.get("policy_version")
+            })
+        },
         "backtest": read_backtest(backtest_path or BACKTEST_STATE),
     }
 
@@ -417,6 +684,8 @@ def render_text(rep):
              f"window: last {rep['window']['days']} day(s)"
              + (f" ({rep['window']['from']} → {rep['window']['to']})" if total else "")
              + f" · {total} turns of {rep['window']['log_lines']} log lines"]
+    if rep["window"].get("policy"):
+        lines[-1] += f" · policy {rep['window']['policy']}"
     if not total:
         lines.append("no turn in this window — nothing to report")
         return "\n".join(lines)
@@ -443,7 +712,7 @@ def render_text(rep):
     if served["tandem_turns"]:
         lines += [f"Codex-dry tandem served {fmt(served['tandem_turns'])} turns "
                   f"({served['tandem_share_pct']}%) — native usage exhausted, "
-                  f"the triptych was replaced (see the gates below)"]
+                  f"the native model ladder was replaced (see the gates below)"]
 
     lines += ["", "Gates",
               table(["gate", "turns", "share"],
@@ -477,6 +746,64 @@ def render_text(rep):
                   f"all-sol {measured['all_sol_credits']} · all-astra {measured['all_astra_credits']}",
                   "  Counterfactuals keep observed tokens fixed; reasoning is already in output. "
                   "These are rate-card estimates, not account debits or equal-quality proof."]
+    cache = rep["prompt_cache"]
+    lines += ["", "Prompt cache — observed native attempts",
+              f"  {cache['tracked_sessions']} hashed sessions · "
+              f"{cache['route_switches']} model switches · "
+              f"{cache['model_revisits']} returns to a previously used model",
+              f"  {cache['hit_attempts']}/{cache['observed_attempts']} attempts with cache reads "
+              f"({fmt(cache['hit_rate_pct'])}%) · "
+              f"{fmt(cache['cached_input_tokens'])}/{fmt(cache['input_tokens'])} input tokens cached "
+              f"({fmt(cache['cached_share_pct'])}%) · {cache['unknown_attempts']} unknown"]
+    if cache["route_switches"]:
+        switch_cache = cache["switch_cache"]
+        revisit_cache = cache["revisit_cache"]
+        lines += [
+            f"  after switches: {switch_cache['hit_attempts']}/{switch_cache['observed']} cache hits "
+            f"({fmt(switch_cache['cached_share_pct'])}% of input cached; "
+            f"{switch_cache['unknown']} unknown)",
+            f"  on model returns: {revisit_cache['hit_attempts']}/{revisit_cache['observed']} cache hits "
+            f"({fmt(revisit_cache['cached_share_pct'])}% of input cached; "
+            f"{revisit_cache['unknown']} unknown)",
+        ]
+    if cache["by_model"]:
+        cache_rows = []
+        for model, row in sorted(cache["by_model"].items()):
+            cache_rows.append([
+                SHORT.get(model, model),
+                row["sessions"],
+                f"{row['hit_attempts']}/{row['observed_attempts']}",
+                f"{fmt(row['hit_rate_pct'])}%",
+                f"{fmt(row['cached_share_pct'])}%",
+                row["unknown_attempts"],
+            ])
+        lines += [table(
+            ["model", "sessions", "hits/seen", "hit rate", "cached input", "unknown"],
+            cache_rows,
+        )]
+    efficiency = rep["routing_efficiency"]
+    lines += ["", "Router input — observed decisions",
+              f"  Jev calls {efficiency['jev_decisions']} · lease hits "
+              f"{efficiency['lease_hits']} · avoided "
+              f"{fmt(efficiency['decision_calls_avoided_pct'])}% of eligible decisions · "
+              f"{fmt(efficiency['observed_jev_input_tokens'])} observed Jev input tokens"]
+    experiment = rep["experiment"]
+    if experiment["active"]:
+        cohort_rows = []
+        for name, row in experiment["cohorts"].items():
+            cohort_rows.append([
+                name, row["turns"], row["sessions"], f"{row['success_pct']}%",
+                row["priced_attempts"], row["routed_credits"],
+                f"{fmt(row['cached_share_pct'])}%", row["route_switches"],
+                row["jev_input_tokens"],
+            ])
+        lines += ["", "Stable session experiment — routed vs all-Sol",
+                  table(
+                      ["cohort", "turns", "sessions", "success", "priced", "credits",
+                       "cached", "swaps", "Jev input"],
+                      cohort_rows,
+                  ),
+                  f"  {experiment['note']}"]
     native = rep["native_cost"]
     lines += ["", "Native Codex calls only — fixed-volume API-rate proxy, not measured quota",
               f"  {native['turns']} calls · {fmt(native['routed_units'])} units · "
@@ -518,7 +845,7 @@ def render_text(rep):
         if bt.get("scenarios_usd"):
             lines += ["  baselines: " + " · ".join(f"{SHORT.get(m, m)} {v} $"
                                                   for m, v in bt["scenarios_usd"].items()
-                                                  if SHORT.get(m, m) in ("luna", "sol", "astra"))]
+                                                  if m in NATIVE_TIERS)]
     else:
         lines += ["", "Simulated API-equivalent USD: no backtest aggregate yet — "
                   "run `python3 poc/backtest_savings.py --days 7` for a simulation using recorded tokens."]
@@ -532,12 +859,19 @@ def main(argv=None):
     ap.add_argument("--log", default=LIVE_LOG, help=f"live decision log (default {LIVE_LOG})")
     ap.add_argument("--backtest", default=BACKTEST_STATE,
                     help=f"backtest aggregate (default {BACKTEST_STATE})")
+    ap.add_argument(
+        "--policy",
+        help="only one policy version; use 'current' for the installed V10 policy",
+    )
     args = ap.parse_args(argv)
     if args.days < 0:
         ap.error("--days must be >= 0")
 
     entries, stats = load_entries(args.log, args.days)
-    rep = summarize(entries, args.days, stats, args.log, args.backtest)
+    policy = POLICY_VERSION if args.policy == "current" else args.policy
+    if policy:
+        entries = [entry for entry in entries if entry.get("policy_version") == policy]
+    rep = summarize(entries, args.days, stats, args.log, args.backtest, policy)
     if args.json:
         json.dump(rep, sys.stdout, indent=2, ensure_ascii=False)
         print()

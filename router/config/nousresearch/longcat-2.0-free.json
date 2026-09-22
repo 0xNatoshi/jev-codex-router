@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/longcat-2.0-free",
+      "gatewayModel": "nousresearch-longcat-2-0-free",
+      "upstreamModel": "meituan/longcat-2.0:free",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "LongCat 2.0 (Nous Research)",
+      "description": "1.6T MoE / 48B active, coding and reasoning, through the Nous Portal free tier.",
+      "priority": 89,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 943000,
+      "inputModalities": [
+        "text"
+      ],
+      "isFree": true,
+      "compHash": "nousresearch-longcat-2-0-free-v1"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "meta",
+      "displayName": "Meta API",
+      "kind": "openai-compatible",
+      "ownedBy": "meta",
+      "protocol": "openai-responses",
+      "baseUrl": "https://api.meta.ai/v1",
+      "baseUrlEnv": "META_BASE_URL",
+      "credential": {
+        "environment": [
+          "META_API_KEY"
+        ],
+        "file": "meta-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-meta"
+        ],
+        "prompt": "Meta API key"
+      }
+    }
+  ]
+}

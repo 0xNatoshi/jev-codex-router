@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "kimi-oauth/kimi-for-coding-highspeed",
+      "gatewayModel": "kimi-oauth-kimi-for-coding-highspeed",
+      "upstreamModel": "kimi-for-coding-highspeed",
+      "provider": "kimi-oauth",
+      "listed": true,
+      "multiAgentVersion": "v2",
+      "displayName": "K2.7 Coding Highspeed (OAuth)",
+      "description": "Kimi K2.7 Coding Highspeed using the existing Kimi Code CLI OAuth session.",
+      "priority": 4,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Always-on coding reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-oauth",
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-oauth-kimi-for-coding-highspeed-v2"
+    }
+  ]
+}

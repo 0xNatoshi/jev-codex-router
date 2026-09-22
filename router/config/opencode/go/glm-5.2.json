@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/glm-5.2",
+      "gatewayModel": "opencode-go-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.2 (opencode Go)",
+      "description": "GLM-5.2 through the opencode Go subscription.",
+      "priority": 31,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-2-v1"
+    }
+  ]
+}

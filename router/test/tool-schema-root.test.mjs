@@ -1,0 +1,1236 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { preservedGeminiSchemas, zillowRangeSchema } from "./fixtures/gemini-tool-schemas.mjs";
+
+import { CODEX_APP_TOOLS } from "../src/codex-app-tools.mjs";
+import { toResponsesRequest } from "../src/grok-oauth-forwarder.mjs";
+import { moonshotSchemaRoute } from "../src/moonshot-schema-routes.mjs";
+import {
+  inlineDanglingNestedDefsRefs,
+  declareSchemaTypes,
+  hasObjectRoot,
+  inlineForeignRefs,
+  nonRecursiveToolSchema,
+  normalizeSchemaLiterals,
+  objectRootToolSchema,
+  providerToolSchema,
+  stripCodexEncryptedSchemaAnnotation,
+} from "../src/tool-schema-root.mjs";
+
+test("Codex encrypted annotations are removed only from JSON-Schema nodes", () => {
+  const ordinary = {
+    type: "object",
+    properties: { value: { type: "string" } },
+  };
+  assert.equal(stripCodexEncryptedSchemaAnnotation(ordinary), ordinary);
+
+  const schema = {
+    type: "object",
+    encrypted: true,
+    properties: {
+      encrypted: {
+        type: "string",
+        description: "A legitimate user property named encrypted.",
+      },
+      nested: {
+        type: "object",
+        properties: {
+          value: { type: "string", encrypted: true },
+        },
+      },
+    },
+    default: { encrypted: true },
+    examples: [{ encrypted: true }],
+  };
+  const repaired = stripCodexEncryptedSchemaAnnotation(schema);
+  assert.notEqual(repaired, schema);
+  assert.equal("encrypted" in repaired, false);
+  assert.deepEqual(repaired.properties.encrypted, {
+    type: "string",
+    description: "A legitimate user property named encrypted.",
+  });
+  assert.equal("encrypted" in repaired.properties.nested.properties.value, false);
+  assert.deepEqual(repaired.default, { encrypted: true });
+  assert.deepEqual(repaired.examples, [{ encrypted: true }]);
+  assert.equal(schema.encrypted, true, "the caller's schema must not be mutated");
+  assert.equal(schema.properties.nested.properties.value.encrypted, true);
+});
+
+test("recursive local refs keep definitions and only the cycle edge becomes permissive", () => {
+  const schema = {
+    type: "object",
+    properties: { node: { $ref: "#/$defs/node" } },
+    $defs: {
+      node: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          child: { $ref: "#/$defs/node", description: "optional child" },
+        },
+      },
+    },
+  };
+  const repaired = nonRecursiveToolSchema(schema);
+  assert.notEqual(repaired, schema);
+  assert.equal(repaired.properties.node.$ref, "#/$defs/node");
+  assert.equal(repaired.$defs.node.type, "object");
+  assert.equal(repaired.$defs.node.properties.label.type, "string");
+  assert.deepEqual(repaired.$defs.node.properties.child, {
+    description: "optional child",
+  });
+  assert.equal(
+    schema.$defs.node.properties.child.$ref,
+    "#/$defs/node",
+    "the caller's recursive schema is not mutated",
+  );
+});
+
+test("mutually recursive refs retain their shared definitions and break one back edge", () => {
+  const schema = {
+    type: "object",
+    properties: { first: { $ref: "#/$defs/a" } },
+    $defs: {
+      a: {
+        type: "object",
+        properties: { name: { type: "string" }, next: { $ref: "#/$defs/b" } },
+      },
+      b: {
+        type: "object",
+        properties: { count: { type: "integer" }, previous: { $ref: "#/$defs/a" } },
+      },
+    },
+  };
+  const repaired = nonRecursiveToolSchema(schema);
+  assert.equal(repaired.properties.first.$ref, "#/$defs/a");
+  assert.equal(repaired.$defs.a.properties.next.$ref, "#/$defs/b");
+  assert.deepEqual(repaired.$defs.b.properties.previous, {});
+});
+
+test("local ref pointers repair root and array cycles without resolving anchors", () => {
+  const root = nonRecursiveToolSchema({
+    properties: { self: { $ref: "#", description: "recursive root" } },
+  });
+  assert.deepEqual(root.properties.self, { description: "recursive root" });
+
+  const array = nonRecursiveToolSchema({
+    anyOf: [
+      {
+        properties: {
+          self: { $ref: "#/anyOf/0" },
+          anchor: { $ref: "#node" },
+        },
+      },
+    ],
+  });
+  assert.deepEqual(array.anyOf[0].properties.self, {});
+  assert.equal(array.anyOf[0].properties.anchor.$ref, "#node");
+});
+
+test("shared ref DAGs stay bounded when another definition is recursive", () => {
+  const $defs = {
+    d0: { type: "string" },
+  };
+  for (let depth = 1; depth <= 18; depth += 1) {
+    $defs[`d${depth}`] = {
+      anyOf: [
+        { $ref: `#/$defs/d${depth - 1}` },
+        { $ref: `#/$defs/d${depth - 1}` },
+      ],
+    };
+  }
+  $defs.recursive = {
+    type: "object",
+    properties: { child: { $ref: "#/$defs/recursive" } },
+  };
+  const schema = {
+    type: "object",
+    properties: {
+      dag: { $ref: "#/$defs/d18" },
+      recursive: { $ref: "#/$defs/recursive" },
+    },
+    $defs,
+  };
+  const sourceBytes = Buffer.byteLength(JSON.stringify(schema));
+  const repaired = nonRecursiveToolSchema(schema);
+  const repairedBytes = Buffer.byteLength(JSON.stringify(repaired));
+
+  assert.equal(repaired.properties.dag.$ref, "#/$defs/d18");
+  assert.equal(repaired.$defs.d18.anyOf[0].$ref, "#/$defs/d17");
+  assert.deepEqual(repaired.$defs.recursive.properties.child, {});
+  assert.ok(
+    repairedBytes < sourceBytes * 2,
+    `shared DAG expanded from ${sourceBytes} to ${repairedBytes} bytes`,
+  );
+});
+
+test("cycle repair preserves boolean and unresolved local refs", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      allowed: { $ref: "#/$defs/allowed" },
+      unknown: { $ref: "#/$defs/missing" },
+      recursive: { $ref: "#/$defs/recursive" },
+    },
+    $defs: {
+      allowed: true,
+      recursive: {
+        type: "object",
+        properties: { next: { $ref: "#/$defs/recursive" } },
+      },
+    },
+  };
+  const repaired = nonRecursiveToolSchema(schema);
+  assert.equal(repaired.$defs.allowed, true);
+  assert.equal(repaired.properties.allowed.$ref, "#/$defs/allowed");
+  assert.equal(repaired.properties.unknown.$ref, "#/$defs/missing");
+  assert.deepEqual(repaired.$defs.recursive.properties.next, {});
+});
+
+// The recursive implementation overflowed at depth 2,000 on the supported
+// Node 22 runtime. Use 4,000 so this regression remains effective on runtimes
+// whose JavaScript stack happens to be larger.
+test("a 4,000-level recursive schema is repaired", () => {
+  const depth = 4_000;
+  let node = {
+    properties: { cycle: { $ref: "#/$defs/node" } },
+  };
+  for (let index = 0; index < depth; index += 1) {
+    node = { properties: { next: node } };
+  }
+  const repaired = nonRecursiveToolSchema({ $defs: { node } });
+  let cursor = repaired.$defs.node;
+  for (let index = 0; index < depth; index += 1) {
+    cursor = cursor.properties.next;
+  }
+  assert.deepEqual(cursor.properties.cycle, {});
+});
+
+test("cycle repair never interprets refs inside literal JSON Schema payloads", () => {
+  const literalPayloads = {
+    const: {
+      $ref: "#/$defs/recursive",
+      nested: { $ref: "#/properties/payload" },
+    },
+    default: { $ref: "#/$defs/recursive" },
+    examples: [{ $ref: "#/$defs/recursive" }],
+    enum: [{ $ref: "#/$defs/recursive" }, { ordinary: true }],
+  };
+  const schema = {
+    type: "object",
+    properties: {
+      payload: { type: "object", ...literalPayloads },
+      recursive: { $ref: "#/$defs/recursive" },
+    },
+    $defs: {
+      recursive: {
+        type: "object",
+        properties: { next: { $ref: "#/$defs/recursive" } },
+      },
+    },
+  };
+  const before = JSON.stringify(literalPayloads);
+
+  const repaired = nonRecursiveToolSchema(schema);
+  const payload = repaired.properties.payload;
+  assert.equal(
+    JSON.stringify({
+      const: payload.const,
+      default: payload.default,
+      examples: payload.examples,
+      enum: payload.enum,
+    }),
+    before,
+  );
+  assert.deepEqual(repaired.$defs.recursive.properties.next, {});
+});
+
+test("object-rooted schemas are returned untouched", () => {
+  const schema = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
+  assert.equal(objectRootToolSchema(schema), schema);
+});
+
+test("a schema with properties but no type counts as object-rooted", () => {
+  const schema = { properties: { path: { type: "string" } } };
+  assert.equal(objectRootToolSchema(schema), schema);
+});
+
+// The shape the live Codex client actually sends: an object root that also
+// carries a root-level union. xAI rejects it on the union alone, so declaring
+// `type: "object"` must not buy a pass.
+test("an object root carrying a root union is still rewritten", () => {
+  const flattened = objectRootToolSchema({
+    type: "object",
+    properties: { mode: { type: "string" } },
+    required: ["mode"],
+    oneOf: [
+      { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+      { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    ],
+  });
+  assert.equal(flattened.oneOf, undefined, "the root union is gone");
+  assert.deepEqual(Object.keys(flattened.properties).sort(), ["id", "mode", "name"]);
+  // "mode" binds every branch; "id" and "name" are alternatives.
+  assert.deepEqual(flattened.required, ["mode"]);
+  assert.equal(hasObjectRoot(flattened), true);
+});
+
+test("union roots flatten into one object with every branch property", () => {
+  const flattened = objectRootToolSchema({
+    oneOf: [
+      { type: "object", properties: { mode: { const: "view" }, id: { type: "string" } }, required: ["mode", "id"] },
+      { type: "object", properties: { mode: { const: "delete" }, force: { type: "boolean" } }, required: ["mode"] },
+    ],
+  });
+  assert.equal(flattened.type, "object");
+  assert.deepEqual(Object.keys(flattened.properties).sort(), ["force", "id", "mode"]);
+  // "mode" is required by both branches, "id" only by the first.
+  assert.deepEqual(flattened.required, ["mode"]);
+  assert.equal(flattened.additionalProperties, true);
+});
+
+test("branches behind local $refs are resolved", () => {
+  const flattened = objectRootToolSchema({
+    $defs: {
+      create: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    },
+    anyOf: [{ $ref: "#/$defs/create" }, { type: "null" }],
+  });
+  assert.deepEqual(Object.keys(flattened.properties), ["name"]);
+  // The null branch is unreachable once the root must be an object, so the
+  // surviving branch's own requirement stands.
+  assert.deepEqual(flattened.required, ["name"]);
+  assert.ok(flattened.$defs, "keeps $defs so nested refs still resolve");
+});
+
+test("self-referential $refs terminate", () => {
+  const flattened = objectRootToolSchema({
+    $defs: { loop: { anyOf: [{ $ref: "#/$defs/loop" }] } },
+    oneOf: [{ $ref: "#/$defs/loop" }],
+  });
+  assert.equal(flattened.type, "object");
+  assert.deepEqual(flattened.properties, {});
+});
+
+test("a union with no object branch still yields a permissive object", () => {
+  const flattened = objectRootToolSchema({ anyOf: [{ type: "string" }, { type: "number" }] });
+  assert.equal(flattened.type, "object");
+  assert.equal(flattened.additionalProperties, true);
+});
+
+test("non-schema input yields an empty object schema", () => {
+  assert.deepEqual(objectRootToolSchema(undefined), { type: "object", properties: {} });
+  assert.deepEqual(objectRootToolSchema("nonsense"), { type: "object", properties: {} });
+});
+
+// The regression this exists for: xAI answers
+// "[invalid_client_tool_schema] codex_app__automation_update: tool parameter
+// root must be an object type" and fails the entire request, so a Grok session
+// could not complete a single turn while the Codex app toolset was attached.
+test("every Codex app tool reaches xAI with an object root", () => {
+  const appTools = CODEX_APP_TOOLS.flatMap((entry) =>
+    entry.type === "namespace" ? entry.tools : [entry],
+  );
+  const unionRooted = appTools.filter((tool) => !hasObjectRoot(tool.inputSchema));
+  assert.ok(
+    unionRooted.length > 0,
+    "expected at least one union-rooted app tool, or this test proves nothing",
+  );
+
+  const request = toResponsesRequest({
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "hi" }],
+    tools: appTools.map((tool) => ({
+      type: "function",
+      function: { name: `codex_app__${tool.name}`, parameters: tool.inputSchema },
+    })),
+  });
+  for (const tool of request.tools.filter((entry) => entry.type === "function")) {
+    assert.ok(
+      hasObjectRoot(tool.parameters),
+      `${tool.name} would be rejected by xAI: root is not an object`,
+    );
+  }
+});
+
+test("automation_update keeps its branch fields after flattening", () => {
+  const automationUpdate = CODEX_APP_TOOLS.flatMap((entry) =>
+    entry.type === "namespace" ? entry.tools : [entry],
+  ).find((tool) => tool.name === "automation_update");
+  assert.ok(automationUpdate, "automation_update is still part of the app toolset");
+
+  const flattened = objectRootToolSchema(automationUpdate.inputSchema);
+  assert.equal(flattened.type, "object");
+  assert.ok(
+    Object.keys(flattened.properties).includes("mode"),
+    "the discriminating field survives the merge",
+  );
+});
+
+// Regression for #179: Moonshot rejects the whole request when an enum literal
+// contradicts the type its own node declares. The reported path was
+// `properties.appTaskLane.properties.enabled.enum`, from a client-supplied
+// schema, so it cannot be repaired in the bundled snapshot.
+test("literals that contradict their declared type are dropped", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      appTaskLane: {
+        type: "object",
+        properties: {
+          enabled: { type: "string", enum: [true] },
+          mode: { type: "string", enum: ["auto", "manual"] },
+        },
+      },
+    },
+  };
+
+  const normalized = normalizeSchemaLiterals(schema);
+  assert.deepEqual(normalized.properties.appTaskLane.properties.enabled, { type: "string" });
+  assert.deepEqual(normalized.properties.appTaskLane.properties.mode.enum, ["auto", "manual"]);
+  assert.deepEqual(
+    schema.properties.appTaskLane.properties.enabled.enum,
+    [true],
+    "the client's schema object is never mutated",
+  );
+});
+
+test("a clean schema is returned by identity, with no copy", () => {
+  const schema = { type: "object", properties: { mode: { type: "string", enum: ["a"] } } };
+  assert.equal(normalizeSchemaLiterals(schema), schema);
+  assert.equal(providerToolSchema(schema), schema);
+});
+
+test("integers satisfy a declared number type", () => {
+  assert.deepEqual(normalizeSchemaLiterals({ type: "number", enum: [1, 2.5] }).enum, [1, 2.5]);
+});
+
+test("a const contradicting its declared type is dropped", () => {
+  assert.deepEqual(normalizeSchemaLiterals({ type: "string", const: 5 }), { type: "string" });
+});
+
+test("an untyped enum is left alone", () => {
+  const schema = { enum: [true, "a"] };
+  assert.equal(normalizeSchemaLiterals(schema), schema);
+});
+
+test("contradicting literals are dropped through $defs and unions", () => {
+  const schema = {
+    $defs: { lane: { type: "string", enum: [1] } },
+    oneOf: [{ type: "object", properties: { flag: { type: "boolean", enum: ["yes"] } } }],
+  };
+  const normalized = normalizeSchemaLiterals(schema);
+  assert.equal("enum" in normalized.$defs.lane, false, "an emptied enum is removed, not left empty");
+  assert.equal("enum" in normalized.oneOf[0].properties.flag, false);
+});
+
+test("providerToolSchema fixes a union root and its literals together", () => {
+  const schema = {
+    oneOf: [
+      { type: "object", properties: { mode: { type: "string", enum: [true, "view"] } } },
+      { type: "object", properties: { id: { type: "string" } } },
+    ],
+  };
+  const normalized = providerToolSchema(schema);
+  assert.equal(normalized.type, "object");
+  assert.deepEqual(normalized.properties.mode.enum, ["view"]);
+});
+
+// providerToolSchema runs on every namespace and MCP tool, where schemas are
+// server-defined. objectRootToolSchema collapses any root it cannot recognize
+// into an empty object -- correct for xAI, which rejects every non-object root,
+// but it would silently replace a real MCP schema with one accepting anything.
+test("a non-object root that is not a union is left alone", () => {
+  for (const schema of [
+    { type: "array", items: { type: "string" } },
+    { type: "string" },
+    {},
+  ]) {
+    assert.equal(providerToolSchema(schema), schema, JSON.stringify(schema));
+  }
+});
+
+test("a union root is still merged into an object", () => {
+  const merged = providerToolSchema({
+    oneOf: [
+      { type: "object", properties: { mode: { type: "string" } } },
+      { type: "object", properties: { id: { type: "string" } } },
+    ],
+  });
+  assert.equal(merged.type, "object");
+  assert.deepEqual(Object.keys(merged.properties).sort(), ["id", "mode"]);
+});
+
+test("literals are still normalized inside a schema that keeps its root", () => {
+  const normalized = providerToolSchema({
+    type: "array",
+    items: { type: "string", enum: [true, "ok"] },
+  });
+  assert.equal(normalized.type, "array");
+  assert.deepEqual(normalized.items.enum, ["ok"]);
+});
+
+// xAI reads the root `type` literally. A nullable object root is legal JSON
+// Schema and is rejected with the same `tool parameter root must be an object
+// type` as a union -- confirmed against the live backend, where
+// `type: ["object", "null"]` 400s and plain `"object"` does not.
+test("a nullable object root is rewritten to a plain object root", () => {
+  const rewritten = objectRootToolSchema({
+    type: ["object", "null"],
+    properties: { id: { type: "string" } },
+    required: ["id"],
+  });
+  assert.equal(rewritten.type, "object");
+  assert.deepEqual(Object.keys(rewritten.properties), ["id"]);
+  assert.deepEqual(rewritten.required, ["id"]);
+});
+
+test("hasObjectRoot rejects a declared type that is not exactly object", () => {
+  assert.equal(hasObjectRoot({ type: ["object", "null"], properties: { id: {} } }), false);
+  assert.equal(hasObjectRoot({ type: "object", properties: { id: {} } }), true);
+  // No declared type at all still falls back to `properties`, which xAI accepts.
+  assert.equal(hasObjectRoot({ properties: { id: {} } }), true);
+});
+
+// Rewriting a root that merged nothing has no branch ambiguity to paper over,
+// so it must not quietly widen a schema that closed itself.
+test("a rewrite that merged no union keeps its own additionalProperties", () => {
+  const closed = objectRootToolSchema({
+    type: ["object", "null"],
+    properties: { id: {} },
+    additionalProperties: false,
+  });
+  assert.equal(closed.additionalProperties, false);
+  const merged = objectRootToolSchema({
+    oneOf: [
+      { type: "object", properties: { a: {} } },
+      { type: "object", properties: { b: {} } },
+    ],
+  });
+  assert.equal(merged.additionalProperties, true);
+});
+
+// A nullable object root is rejected by name by two independent upstreams --
+// xAI ("tool parameter root must be an object type") and DeepSeek ("schema must
+// be a JSON Schema of 'type: \"object\"', got 'type: [\"object\",\"null\"]'") --
+// both reproduced live, so the shared relay repairs it for every provider.
+test("the shared relay repairs a nullable object root", () => {
+  const repaired = providerToolSchema({
+    type: ["object", "null"],
+    properties: { id: { type: "string" } },
+    required: ["id"],
+    additionalProperties: false,
+  });
+  assert.equal(repaired.type, "object");
+  assert.deepEqual(Object.keys(repaired.properties), ["id"]);
+  assert.deepEqual(repaired.required, ["id"]);
+  // Nothing was merged, so the schema keeps the door it closed.
+  assert.equal(repaired.additionalProperties, false);
+});
+
+// Still narrow: the relay runs on every namespace and MCP tool, so a root it
+// merely finds unusual must survive untouched rather than be replaced with one
+// that accepts anything.
+test("the shared relay leaves other roots alone", () => {
+  const plain = { type: "object", properties: { id: {} } };
+  assert.equal(providerToolSchema(plain), plain);
+  const typeless = { properties: { id: {} } };
+  assert.equal(providerToolSchema(typeless), typeless);
+  // No "object" member means collapsing it would destroy the schema, not fix it.
+  const notObject = { type: ["string", "null"] };
+  assert.equal(providerToolSchema(notObject), notObject);
+});
+
+// Moonshot rejects every `$ref` that does not point into `#/$defs/`, and the
+// Codex App connector pack ships plenty that do not: Wego `_flights_search`
+// points `inboundTotalDurationRange` at its own sibling `priceRange`. The
+// rejection fails the whole request, so one connector tool kills a kimi session
+// that never searches a flight (issue #353).
+function flightsSearchSchema() {
+  return {
+    type: "object",
+    properties: {
+      filters: {
+        type: "object",
+        properties: {
+          priceRange: {
+            type: "object",
+            properties: {
+              min: { type: "number" },
+              max: { type: "number" },
+            },
+            required: ["min"],
+            additionalProperties: false,
+          },
+          inboundTotalDurationRange: {
+            $ref: "#/properties/filters/properties/priceRange",
+            description: "Inbound duration window, in minutes.",
+          },
+        },
+      },
+    },
+  };
+}
+
+function refPointers(value, found = []) {
+  if (Array.isArray(value)) {
+    for (const entry of value) refPointers(entry, found);
+    return found;
+  }
+  if (!value || typeof value !== "object") return found;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "$ref" && typeof entry === "string") found.push(entry);
+    else refPointers(entry, found);
+  }
+  return found;
+}
+
+test("a sibling-property ref is inlined with the target's constraints", () => {
+  const schema = flightsSearchSchema();
+  const inlined = inlineForeignRefs(schema);
+  assert.notEqual(inlined, schema);
+  assert.deepEqual(refPointers(inlined), []);
+  const inbound = inlined.properties.filters.properties.inboundTotalDurationRange;
+  assert.equal(inbound.type, "object");
+  assert.deepEqual(Object.keys(inbound.properties), ["min", "max"]);
+  assert.deepEqual(inbound.required, ["min"]);
+  assert.equal(inbound.additionalProperties, false);
+  // A constraint declared beside the `$ref` is the client's own and outranks
+  // whatever the target says.
+  assert.equal(inbound.description, "Inbound duration window, in minutes.");
+  // The client's schema is never mutated.
+  assert.deepEqual(schema, flightsSearchSchema());
+});
+
+// A foreign `$ref` plus a validation sibling is a conjunction. Blind object
+// spread is only lossless when overlapping keywords agree: replacing the
+// target's tighter maxLength with the sibling's looser value would widen what
+// the caller's tool accepts. When that conjunction cannot be represented by a
+// simple inline, keep the original ref and let the strict provider fail closed.
+test("a conflicting foreign ref validation sibling is not widened", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      base: { type: "string", maxLength: 5 },
+      alias: { $ref: "#/properties/base", maxLength: 10 },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined, schema);
+  assert.deepEqual(inlined.properties.alias, {
+    $ref: "#/properties/base",
+    maxLength: 10,
+  });
+});
+test("a $defs ref is the form Moonshot asks for and survives untouched", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      window: { $ref: "#/$defs/range" },
+      alias: { $ref: "#/properties/window" },
+    },
+    $defs: { range: { type: "object", properties: { min: { type: "number" } } } },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.window.$ref, "#/$defs/range");
+  // The alias pointed at a property, not a definition, so it is expanded -- and
+  // what it expands to is the `$defs` pointer the property itself carries.
+  assert.equal(inlined.properties.alias.$ref, "#/$defs/range");
+  assert.deepEqual(inlined.$defs, schema.$defs);
+});
+
+test("a dangling $defs ref resolves from the nearest enclosing schema", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      request: {
+        $defs: {
+          MinMaxInt: {
+            type: "object",
+            properties: { min: { type: "integer" }, max: { type: "integer" } },
+          },
+        },
+        type: "object",
+        properties: {
+          bedrooms: {
+            $ref: "#/$defs/MinMaxInt",
+            description: "Bedrooms range filter.",
+          },
+        },
+      },
+    },
+  };
+  const inlined = inlineDanglingNestedDefsRefs(schema);
+  assert.deepEqual(inlined.properties.request.properties.bedrooms, {
+    type: "object",
+    properties: { min: { type: "integer" }, max: { type: "integer" } },
+    description: "Bedrooms range filter.",
+  });
+  assert.deepEqual(schema.properties.request.properties.bedrooms, {
+    $ref: "#/$defs/MinMaxInt",
+    description: "Bedrooms range filter.",
+  });
+});
+
+test("valid root $defs refs and unresolved nested refs stay untouched", () => {
+  const valid = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/value" } },
+    $defs: { value: { type: "string" } },
+  };
+  assert.equal(inlineDanglingNestedDefsRefs(valid), valid);
+
+  const unresolved = {
+    type: "object",
+    properties: {
+      request: {
+        $defs: { other: { type: "string" } },
+        type: "object",
+        properties: { value: { $ref: "#/$defs/missing" } },
+      },
+    },
+  };
+  assert.equal(inlineDanglingNestedDefsRefs(unresolved), unresolved);
+});
+
+test("Gemini repair preserves valid schemas from the adversarial review", () => {
+  for (const { name, schema } of preservedGeminiSchemas()) {
+    const before = structuredClone(schema);
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema, name);
+    assert.deepEqual(schema, before, name);
+  }
+});
+
+test("Gemini repair preserves the observed Zillow range constraints", () => {
+  const schema = zillowRangeSchema();
+  const before = structuredClone(schema);
+  const repaired = inlineDanglingNestedDefsRefs(schema);
+  assert.deepEqual(repaired.properties.request.properties.propertyFiltersRequest.properties.bedrooms, {
+    ...schema.properties.request.$defs.MinMaxInt,
+    description: schema.properties.request.properties.propertyFiltersRequest.properties.bedrooms.description,
+  });
+  assert.deepEqual(schema, before);
+  assert.equal(inlineDanglingNestedDefsRefs(repaired), repaired);
+});
+
+test("borrowed nested definitions retain their original lexical scope", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      outer: {
+        type: "object",
+        $defs: {
+          Value: { type: "string" },
+          Wrapper: { type: "object", properties: { value: { $ref: "#/$defs/Value" } } },
+        },
+        properties: {
+          inner: {
+            type: "object",
+            $defs: { Value: { type: "integer" } },
+            properties: { wrapper: { $ref: "#/$defs/Wrapper" }, own: { $ref: "#/$defs/Value" } },
+          },
+        },
+      },
+    },
+  };
+  const repaired = inlineDanglingNestedDefsRefs(schema);
+  const outer = repaired.properties.outer;
+  assert.equal(outer.$defs.Wrapper.properties.value.type, "string");
+  assert.equal(outer.properties.inner.properties.wrapper.properties.value.type, "string");
+  assert.equal(outer.properties.inner.properties.own.type, "integer");
+});
+
+test("dangling repair never falls through a boolean or invalid definition", () => {
+  for (const value of [false, true, null, 1]) {
+    const schema = {
+      type: "object",
+      properties: {
+        outer: {
+          $defs: { Value: { type: "string" } },
+          properties: {
+            inner: {
+              $defs: { Value: value },
+              properties: { value: { $ref: "#/$defs/Value" } },
+            },
+          },
+        },
+      },
+    };
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema);
+    schema.$defs = { Value: value };
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema);
+  }
+});
+
+test("dangling repair leaves validation siblings intact, including interacting keywords", () => {
+  for (const siblings of [
+    { properties: { value: { type: "string" } } },
+    { additionalProperties: false },
+    { type: "object" },
+    { allOf: [{ minProperties: 1 }] },
+  ]) {
+    const schema = {
+      type: "object",
+      properties: {
+        request: {
+          $defs: { Closed: { type: "object", additionalProperties: false } },
+          properties: { value: { $ref: "#/$defs/Closed", ...siblings } },
+        },
+      },
+    };
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema);
+  }
+});
+
+test("dangling repair declines resource boundaries and dynamic references", () => {
+  for (const [key, value] of [
+    ["$id", "https://example.test/resource"], ["id", "resource.json"],
+    ["$schema", "https://json-schema.org/draft/2020-12/schema"],
+    ["$anchor", "node"], ["$dynamicRef", "#node"], ["$dynamicAnchor", "node"],
+    ["$recursiveRef", "#"], ["$recursiveAnchor", true],
+  ]) {
+    const schema = zillowRangeSchema();
+    schema.properties.request[key] = value;
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema, key);
+  }
+});
+
+test("dangling repair decodes pointer names without following other pointer forms", () => {
+  const schema = {
+    properties: {
+      request: {
+        $defs: { "a/b~c": { type: "string" } },
+        properties: {
+          value: { $ref: "#/$defs/a~1b~0c" },
+          encoded: { $ref: "#/%24defs/a~1b~0c" },
+          invalid: { $ref: "#/$defs/a~2b" },
+          malformed: { $ref: "#/$defs/%ZZ" },
+          deeper: { $ref: "#/$defs/a~1b~0c/type" },
+        },
+      },
+    },
+  };
+  const repaired = inlineDanglingNestedDefsRefs(schema).properties.request.properties;
+  assert.deepEqual(repaired.value, { type: "string" });
+  assert.deepEqual(repaired.encoded, { type: "string" });
+  for (const key of ["invalid", "malformed", "deeper"]) {
+    assert.equal(repaired[key], schema.properties.request.properties[key]);
+  }
+});
+
+test("dangling repair leaves literal payloads alone", () => {
+  const schema = zillowRangeSchema();
+  const literal = { $ref: "#/$defs/MinMaxInt", $id: "literal", properties: { nested: { $ref: "#/$defs/MinMaxInt" } } };
+  schema.properties.request.default = literal;
+  schema.properties.request.examples = [literal];
+  const repaired = inlineDanglingNestedDefsRefs(schema);
+  assert.notEqual(repaired, schema);
+  assert.equal(repaired.properties.request.default, literal);
+  assert.equal(repaired.properties.request.examples[0], literal);
+});
+
+test("dangling repair rolls back cycles and expansion, size, and depth limits", () => {
+  for (const defs of [
+    { A: { $ref: "#/$defs/A" } },
+    { A: { $ref: "#/$defs/B" }, B: { $ref: "#/$defs/A" } },
+    { A: { properties: { next: { $ref: "#/$defs/A" } } } },
+  ]) {
+    const schema = { properties: { request: { $defs: defs, properties: { value: { $ref: "#/$defs/A" } } } } };
+    assert.equal(inlineDanglingNestedDefsRefs(schema), schema);
+  }
+  const expanded = zillowRangeSchema();
+  expanded.properties.request.properties = Object.fromEntries(
+    Array.from({ length: 513 }, (_, i) => [`value${i}`, { $ref: "#/$defs/MinMaxInt" }]),
+  );
+  assert.equal(inlineDanglingNestedDefsRefs(expanded), expanded);
+  const large = zillowRangeSchema();
+  large.properties.request.$defs.MinMaxInt.description = "x".repeat(256 * 1024);
+  assert.equal(inlineDanglingNestedDefsRefs(large), large);
+  const deep = zillowRangeSchema();
+  let node = deep;
+  for (let i = 0; i < 40; i += 1) node = node.items = {};
+  assert.equal(inlineDanglingNestedDefsRefs(deep), deep);
+});
+
+test("a $defs ref with sibling keywords is inlined for Moonshot", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      targetThreadId: { $ref: "#/$defs/__schema20" },
+    },
+    $defs: {
+      __schema2: { type: "string", minLength: 1 },
+      __schema20: {
+        $ref: "#/$defs/__schema2",
+        type: "string",
+        minLength: 1,
+        format: "uuid",
+        description: "Target thread UUID for heartbeat automations.",
+      },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.targetThreadId.$ref, "#/$defs/__schema20");
+  assert.deepEqual(inlined.$defs.__schema2, { type: "string", minLength: 1 });
+  assert.deepEqual(inlined.$defs.__schema20, {
+    type: "string",
+    minLength: 1,
+    format: "uuid",
+    description: "Target thread UUID for heartbeat automations.",
+  });
+  assert.deepEqual(schema.$defs.__schema20.$ref, "#/$defs/__schema2");
+});
+
+test("a decorated $defs alias chain resolves through pure aliases", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/decorated" } },
+    $defs: {
+      base: { type: "string", minLength: 2 },
+      alias: { $ref: "#/$defs/base" },
+      decorated: {
+        $ref: "#/$defs/alias",
+        type: "string",
+        minLength: 2,
+        format: "uuid",
+        description: "Decorated alias.",
+      },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.value.$ref, "#/$defs/decorated");
+  assert.deepEqual(inlined.$defs.alias, { $ref: "#/$defs/base" });
+  assert.deepEqual(inlined.$defs.decorated, {
+    type: "string",
+    minLength: 2,
+    format: "uuid",
+    description: "Decorated alias.",
+  });
+  assert.deepEqual(schema.$defs.decorated.$ref, "#/$defs/alias");
+});
+
+test("a conflicting $defs ref sibling remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/narrow" } },
+    $defs: {
+      base: { type: "string", minLength: 2 },
+      narrow: {
+        $ref: "#/$defs/base",
+        type: "string",
+        minLength: 1,
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.narrow, {
+    $ref: "#/$defs/base",
+    type: "string",
+    minLength: 1,
+  });
+});
+
+test("a conflicting stricter $defs ref sibling also remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/narrow" } },
+    $defs: {
+      base: { type: "string", minLength: 1 },
+      narrow: {
+        $ref: "#/$defs/base",
+        type: "string",
+        minLength: 2,
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.narrow, {
+    $ref: "#/$defs/base",
+    type: "string",
+    minLength: 2,
+  });
+});
+
+test("a cyclic $defs ref sibling remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { node: { $ref: "#/$defs/node" } },
+    $defs: {
+      node: {
+        $ref: "#/$defs/node",
+        type: "object",
+        description: "Cyclic node.",
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.node, {
+    $ref: "#/$defs/node",
+    type: "object",
+    description: "Cyclic node.",
+  });
+});
+
+test("an unresolvable ref is left alone rather than guessed at", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      dangling: { $ref: "#/properties/missing" },
+      anchor: { $ref: "#namedAnchor" },
+      remote: { $ref: "https://example.com/schema.json" },
+      resolvable: { $ref: "#/properties/known" },
+      known: { type: "string", minLength: 2 },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.dangling.$ref, "#/properties/missing");
+  assert.equal(inlined.properties.anchor.$ref, "#namedAnchor");
+  assert.equal(inlined.properties.remote.$ref, "https://example.com/schema.json");
+  assert.deepEqual(inlined.properties.resolvable, { type: "string", minLength: 2 });
+});
+
+test("a self-referential foreign ref terminates and keeps the cycle edge", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      node: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          child: { $ref: "#/properties/node" },
+        },
+      },
+      root: { $ref: "#" },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  // The expansion stops at the edge that would close the cycle: the innermost
+  // `child` still carries the pointer instead of another copy of `node`.
+  const child = inlined.properties.node.properties.child;
+  assert.equal(child.type, "object");
+  assert.equal(child.properties.label.type, "string");
+  assert.equal(child.properties.child.$ref, "#/properties/node");
+  assert.equal(inlined.properties.root.type, "object");
+});
+
+test("a mutually recursive pair terminates", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      a: { type: "object", properties: { next: { $ref: "#/properties/b" } } },
+      b: { type: "object", properties: { previous: { $ref: "#/properties/a" } } },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.a.properties.next.type, "object");
+  assert.equal(
+    inlined.properties.a.properties.next.properties.previous.properties.next.$ref,
+    "#/properties/b",
+  );
+});
+
+// Expanding a shared ref DAG can grow exponentially, so an inlined copy that
+// outgrows its budget is worse than the rejection it was meant to avoid: it
+// would ship megabytes of duplicated schema on every turn. The original comes
+// back instead, refs and all.
+test("an expansion past the byte budget falls back to the original schema", () => {
+  const enormous = {
+    type: "string",
+    enum: Array.from({ length: 4000 }, (_, index) => `option-${index}-${"x".repeat(16)}`),
+  };
+  const properties = { enormous };
+  for (let index = 0; index < 12; index += 1) {
+    properties[`copy${index}`] = { $ref: "#/properties/enormous" };
+  }
+  const schema = { type: "object", properties };
+  assert.equal(inlineForeignRefs(schema), schema);
+});
+
+test("a schema with no foreign ref keeps identity", () => {
+  const schema = {
+    type: "object",
+    properties: { window: { $ref: "#/$defs/range" } },
+    $defs: { range: { type: "object" } },
+  };
+  assert.equal(inlineForeignRefs(schema), schema);
+  const notObject = ["not", "a", "schema"];
+  assert.equal(inlineForeignRefs(notObject), notObject);
+});
+
+test("a union leaf that declares no type gains the type its branches agree on", () => {
+  // #641: Moonshot answers a typeless node inside a union with
+  // "tools.function.parameters missing type in anyOf properties" and loses the
+  // turn. This is the reporter's exact path.
+  const schema = {
+    type: "object",
+    properties: {
+      icon: {
+        anyOf: [
+          { type: "object", properties: { color: { anyOf: [{ type: "string" }, { type: "null" }] } } },
+          { type: "null" },
+        ],
+      },
+    },
+  };
+  const declared = declareSchemaTypes(schema);
+  assert.deepEqual(declared.properties.icon.anyOf[0].properties.color.type, ["string", "null"]);
+  assert.deepEqual(declared.properties.icon.type, ["object", "null"]);
+  // The union itself is preserved: the type is added alongside, never instead.
+  assert.deepEqual(
+    declared.properties.icon.anyOf[0].properties.color.anyOf,
+    [{ type: "string" }, { type: "null" }],
+  );
+});
+
+test("a type is declared only where the node already implies one", () => {
+  assert.equal(declareSchemaTypes({ items: { type: "string" } }).type, "array");
+  assert.equal(declareSchemaTypes({ properties: {} }).type, "object");
+  assert.equal(declareSchemaTypes({ required: ["a"] }).type, "object");
+  assert.equal(declareSchemaTypes({ enum: ["a", "b"] }).type, "string");
+  assert.equal(declareSchemaTypes({ const: 7 }).type, "integer");
+  for (const open of [
+    {},                                  // deliberately open: narrowing is worse than the 400
+    { not: { type: "string" } },         // a negation says what it is not
+    { enum: ["a", 1] },                  // branches disagree
+    { anyOf: [{ type: "string" }, {}] }, // one branch declares nothing
+    { $ref: "#/$defs/Node" },            // the target carries the type
+  ]) {
+    assert.equal("type" in declareSchemaTypes(open), false, JSON.stringify(open));
+  }
+});
+
+test("a schema that already declares its types is returned by identity", () => {
+  const clean = {
+    type: "object",
+    properties: { a: { type: "string" }, b: { type: "array", items: { type: "number" } } },
+  };
+  assert.equal(declareSchemaTypes(clean), clean);
+  assert.equal(declareSchemaTypes({ type: "object" }).type, "object");
+});
+
+test("blanking a cycle edge keeps the type it pointed at when the route asks", () => {
+  // #726: `declareSchemaTypes` runs in the router's Moonshot pass, but the
+  // forwarder breaks `$ref` cycles later. Left as a bare `{}` the node declares
+  // no type, which is exactly what Moonshot rejects with
+  // "tools.function.parameters missing type in anyOf properties" -- a 400 the
+  // router manufactured out of a schema the client wrote correctly.
+  const schema = {
+    type: "object",
+    properties: { root: { $ref: "#/$defs/Node" } },
+    $defs: {
+      Node: {
+        type: "object",
+        properties: { name: { type: "string" }, child: { $ref: "#/$defs/Node" } },
+      },
+      Tags: { type: "array", items: { $ref: "#/$defs/Tags" } },
+    },
+  };
+
+  const repaired = nonRecursiveToolSchema(schema, { keepBlankedTypes: true });
+  assert.deepEqual(repaired.$defs.Node.properties.child, { type: "object" });
+  assert.deepEqual(repaired.$defs.Tags.items, { type: "array" });
+  // The type is read from the target, so the definitions themselves survive.
+  assert.equal(repaired.$defs.Node.properties.name.type, "string");
+});
+
+test("every other route still gets the permissive blank it has today", () => {
+  // The opposite of the test above, and the reason this is opt-in: the blanking
+  // exists for Meta's Console 400, that path works, and it was not re-measured
+  // here. Its wire payload must not move.
+  const schema = {
+    type: "object",
+    properties: { root: { $ref: "#/$defs/Node" } },
+    $defs: { Node: { type: "object", properties: { child: { $ref: "#/$defs/Node" } } } },
+  };
+  assert.deepEqual(nonRecursiveToolSchema(schema).$defs.Node.properties.child, {});
+  assert.deepEqual(
+    nonRecursiveToolSchema(schema, { keepBlankedTypes: false }).$defs.Node.properties.child,
+    {},
+  );
+});
+
+test("a type the client wrote on the referencing node is never overwritten", () => {
+  const schema = {
+    type: "object",
+    properties: { root: { $ref: "#/$defs/Node" } },
+    $defs: {
+      Node: {
+        type: "object",
+        properties: {
+          child: { $ref: "#/$defs/Node", type: "string", description: "kept" },
+        },
+      },
+    },
+  };
+  const child = nonRecursiveToolSchema(schema, { keepBlankedTypes: true })
+    .$defs.Node.properties.child;
+  assert.equal(child.type, "string");
+  assert.equal(child.description, "kept");
+  assert.equal("$ref" in child, false);
+});
+
+test("an alias definition is followed, and a definition cycle of pure refs terminates", () => {
+  const aliased = {
+    type: "object",
+    properties: { root: { $ref: "#/$defs/Node" } },
+    $defs: {
+      Alias: { $ref: "#/$defs/Node" },
+      Node: { type: "object", properties: { child: { $ref: "#/$defs/Alias" } } },
+    },
+  };
+  assert.deepEqual(
+    nonRecursiveToolSchema(aliased, { keepBlankedTypes: true }).$defs.Node.properties.child,
+    { type: "object" },
+  );
+
+  // Nothing declares a type anywhere on the ring; the walk must stop rather
+  // than chase it, and the node stays open.
+  const ring = {
+    type: "object",
+    properties: { root: { $ref: "#/$defs/A" } },
+    $defs: { A: { $ref: "#/$defs/B" }, B: { $ref: "#/$defs/A" } },
+  };
+  const repaired = nonRecursiveToolSchema(ring, { keepBlankedTypes: true });
+  assert.equal(JSON.stringify(repaired).includes("$defs"), true);
+});
+
+test("the Moonshot schema route set is exactly the measured routes", () => {
+  for (const providerId of ["kimi-oauth", "kimi-api", "kimi-api-cn"]) {
+    assert.equal(moonshotSchemaRoute(providerId, "any-model"), true);
+  }
+  assert.equal(moonshotSchemaRoute("opencode-go", "kimi-k2.7-code"), true);
+  // Not projected onto the rest of Console Go, and not onto the providers that
+  // use the blanking for Meta's 400.
+  assert.equal(moonshotSchemaRoute("opencode-go", "muse-spark-1.2-contributor"), false);
+  assert.equal(moonshotSchemaRoute("opencode-go-responses", "muse-spark-1.2-contributor"), false);
+  assert.equal(moonshotSchemaRoute("opencode-free-responses", "muse-spark-1.3-contributor-free"), false);
+  assert.equal(moonshotSchemaRoute(undefined, undefined), false);
+});
+
+test("blanked refs respect type-implying siblings, including ambiguous ones", () => {
+  for (const [siblings, expected] of [
+    [{ enum: ["a", "b"] }, "string"],
+    [{ const: false }, "boolean"],
+    [{ items: { type: "string" } }, "array"],
+    [{ prefixItems: [{ type: "string" }] }, "array"],
+    [{ properties: { x: { type: "string" } } }, "object"],
+    [{ enum: ["a", 1] }, undefined],
+    [{ anyOf: [{ type: "string" }, {}] }, undefined],
+  ]) {
+    const schema = { type: "array", items: { $ref: "#", ...siblings } };
+    const original = structuredClone(schema);
+    const child = nonRecursiveToolSchema(schema, { keepBlankedTypes: true }).items;
+    assert.deepEqual(child, expected === undefined ? siblings : { ...siblings, type: expected });
+    assert.deepEqual(schema, original);
+  }
+});
+
+test("untyped recursive unions remain open rather than guessing a target type", () => {
+  const schema = {
+    type: "object", properties: { root: { $ref: "#/$defs/N" } },
+    $defs: { N: { anyOf: [{ type: "string" }, { $ref: "#/$defs/N" }] } },
+  };
+  const flat = nonRecursiveToolSchema(declareSchemaTypes(schema), { keepBlankedTypes: true });
+  assert.deepEqual(flat.$defs.N.anyOf, [{ type: "string" }, {}]);
+});
+
+test("null options preserve default cycle blanking", () => {
+  const schema = { type: "array", items: { $ref: "#" } };
+  assert.deepEqual(nonRecursiveToolSchema(schema, null), { type: "array", items: {} });
+});

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/minimax-m3",
+      "gatewayModel": "nousresearch-minimax-m3",
+      "upstreamModel": "minimax/minimax-m3",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "MiniMax M3 (Nous Research)",
+      "description": "MiniMax M3 through the Nous Portal.",
+      "priority": 80,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 943000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-minimax-m3-v1"
+    }
+  ]
+}

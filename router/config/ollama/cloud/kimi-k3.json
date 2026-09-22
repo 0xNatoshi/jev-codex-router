@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "ollama-cloud/kimi-k3",
+      "gatewayModel": "ollama-cloud-kimi-k3",
+      "upstreamModel": "kimi-k3:cloud",
+      "provider": "ollama-cloud",
+      "listed": true,
+      "displayName": "Kimi K3 (Ollama Cloud)",
+      "description": "Kimi K3 hosted on Ollama Cloud, a 2.8T Mixture-of-Experts model with 16 activated experts, native multimodal support (text, image, video), tool use, reasoning, and a 1M-token context window.",
+      "priority": 25,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "ollama-cloud",
+      "compHash": "ollama-cloud-kimi-k3-v1"
+    }
+  ]
+}

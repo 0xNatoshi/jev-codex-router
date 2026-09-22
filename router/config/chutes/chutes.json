@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "chutes",
+      "displayName": "Chutes",
+      "kind": "openai-compatible",
+      "ownedBy": "chutes",
+      "baseUrl": "https://llm.chutes.ai/v1",
+      "baseUrlEnv": "CHUTES_API_BASE_URL",
+      "credential": {
+        "environment": [
+          "CHUTES_API_KEY"
+        ],
+        "file": "chutes-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-chutes"
+        ],
+        "prompt": "Chutes API key"
+      }
+    }
+  ]
+}

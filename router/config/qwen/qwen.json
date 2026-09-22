@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "qwen-plan",
+      "displayName": "Qwen (Alibaba Plan)",
+      "kind": "openai-compatible",
+      "ownedBy": "alibaba",
+      "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "baseUrlEnv": "QWEN_PLAN_BASE_URL",
+      "credential": {
+        "environment": [
+          "QWEN_PLAN_API_KEY",
+          "DASHSCOPE_API_KEY"
+        ],
+        "file": "qwen-plan-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-qwen-plan"
+        ],
+        "prompt": "Alibaba Model Studio plan API key"
+      }
+    }
+  ]
+}

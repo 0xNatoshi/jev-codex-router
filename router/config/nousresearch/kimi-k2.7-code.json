@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/kimi-k2.7-code",
+      "gatewayModel": "nousresearch-kimi-k2-7-code",
+      "upstreamModel": "moonshotai/kimi-k2.7-code",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Kimi K2.7 Code (Nous Research)",
+      "description": "Moonshot Kimi K2.7 Code through the Nous Portal.",
+      "priority": 85,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235929,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-kimi-k2-7-code-v1"
+    }
+  ]
+}

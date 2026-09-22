@@ -1,34 +1,54 @@
 # Operations runbook
 
 `jev_server.py` listens on `127.0.0.1:4319` and receives Responses requests for
-the `jev/auto` model. For each turn it asks Jev for a route
+the `jev/auto` model from the router fork embedded at `../router`. For each turn it asks Jev for a route
 (tier + thinking depth), applies the routing policy, and relays the request to
 the Codex Router's local caller edge, which serves native GPT models from the
 shared ChatGPT session.
+
+## Local authentication
+
+After registering `jev`, run from the repository root:
+
+```sh
+node server/configure-auth.mjs
+```
+
+This uses the embedded router's credential transaction, retains an existing credential,
+and prints metadata only. The Jev server reads the protected `jev.key` in the
+router's `generic-provider-credentials` directory. All POSTs require a Bearer
+header; the parent adds it automatically. Direct `/ask` clients must add it.
+No OpenAI Platform API key is needed for this local ChatGPT-session relay.
 
 ## Lifecycle
 
 | Action | Command |
 |---|---|
 | Decision log | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
+| Current-policy cost/cache report | `python3 server/report_routing.py --days 7 --policy current` |
+| Stable all-Sol cohort | create `~/.codex/codex-router/jev-router.sol-baseline.json` with `{"percent":10,"until":"<ISO-8601>"}` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` / `rm` to re-enable |
 | Install the launchd service | `bash server/install-service.sh` (in your own Terminal) |
 | Service status | `launchctl print gui/$(id -u)/com.thibaultsaintjean.jev-router` |
 | Service restart | `launchctl kickstart -k gui/$(id -u)/com.thibaultsaintjean.jev-router` |
 | Watchdog (no launchd) | `server/watchdog.sh`, e.g. cron every 5 min |
-| Hide the model | `./bin/control picker set jev/auto hide` (router checkout) |
-| Disable the provider | `./bin/codex-router providers generic disable jev` |
-| Revoke native sharing | `./bin/codex-router chatgpt-session disable` |
+| Router status | `bin/jev-codex-router router status` |
+| Update the monorepo | `bin/jev-codex-router update` |
+| Hide the model | `router/bin/control picker set jev/auto hide` |
+| Disable the provider | `bin/jev-codex-router router providers generic disable jev` |
+| Revoke native sharing | `bin/jev-codex-router router chatgpt-session disable` |
 
-## After a Codex Router update
+## After an embedded router update
 
-Provider and model state live outside the router checkout, so updates should not
-touch them. Verify anyway:
+`bin/jev-codex-router update` fetches this repository's `origin/main`, updates
+the complete monorepo and invokes the root installer. It never pulls the
+embedded router from a second checkout. Provider and model state live outside
+the source tree, so updates should not touch them. Verify anyway:
 
-1. `./bin/codex-router providers generic list` → should show `SHOW jev`.
+1. `bin/jev-codex-router router providers generic list` → should show `SHOW jev`.
 2. `cat ~/.codex/codex-router/model-picker.json` → `jev/auto` under `visible`.
 3. `curl -s http://127.0.0.1:4319/health` → `{"ok": true...}`.
-4. If needed: `./bin/codex-router refresh-catalog`, then restart Codex.
+4. If needed: `bin/jev-codex-router router refresh-catalog`, then restart Codex.
 
 ## Troubleshooting
 
@@ -37,7 +57,7 @@ touch them. Verify anyway:
   forces `Content-Type: text/event-stream` on streamed replies for exactly this
   reason; make sure you run the current `jev_server.py`.
 - **401 / route refused by the edge**: the shared ChatGPT session expired —
-  re-run `./bin/codex-router chatgpt-session enable`.
+  re-run `bin/jev-codex-router router chatgpt-session enable`.
 - **Every turn routes to astra**: check the decision log (`gate` field) — the
   kill switch may be on, or the TypeSafe key is unreadable (look for
   `jev_error` / `no_key_or_task` gates).
@@ -51,7 +71,7 @@ can mean the model is selected while the OpenAI provider still points directly
 at OpenAI. Listing a model in a catalog, or declaring `[model_providers.jev]`,
 does not associate an existing task with that provider.
 
-1. Inspect `./bin/codex-router status`: check `model_provider` and the redacted
+1. Inspect `bin/jev-codex-router router status`: check `model_provider` and the redacted
    `openai_base_url`, not just whether the service is running.
 2. Verify the main router has the enabled `jev` generic provider and the
    `jev/auto` entry in `user-models.json`. A direct Codex provider declaration
@@ -80,9 +100,8 @@ for the distinction between the built-in endpoint override and custom providers.
   `text/event-stream; charset=utf-8` on stream relays.
 - `stream: true` is forced upstream (the edge requires it); non-stream callers
   get the final response object assembled from the SSE stream.
-- JSON request bodies need a `Content-Length` header and are capped at 8 MiB;
-  chunked transfer encoding is rejected because the loopback handler does not
-  decode it before applying the limit.
-- One Jev decision per request (≈0.6 s, included in total latency). Tool-loop
-  continuations are re-classified on the same last-user text; they land on the
-  same tier in practice, and everything is logged for tuning.
+- One compact Jev decision starts each semantic phase. Its explicit lease can
+  cover a clean same-tool chain or the clean continuations of one user turn;
+  changed tools, errors, compactions and new user turns are re-classified. The
+  canonical request and `prompt_cache_key` remain unchanged for every selected
+  model.

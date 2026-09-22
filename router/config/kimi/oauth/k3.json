@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "kimi-oauth/k3",
+      "gatewayModel": "kimi-oauth-k3",
+      "upstreamModel": "k3",
+      "provider": "kimi-oauth",
+      "listed": true,
+      "multiAgentVersion": "v2",
+      "displayName": "Kimi K3 (OAuth)",
+      "description": "Kimi K3 using the existing Kimi Code CLI OAuth session.",
+      "priority": 3,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-oauth",
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-oauth-k3-v3"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "openrouter/grok-4.6",
+      "gatewayModel": "openrouter-grok-4-6",
+      "upstreamModel": "x-ai/grok-4.6",
+      "provider": "openrouter",
+      "listed": true,
+      "displayName": "Grok 4.6 (OpenRouter)",
+      "description": "xAI Grok 4.6 through OpenRouter.",
+      "priority": 72,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 500000,
+      "autoCompact": 440000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "openrouter-grok-4-6-v1"
+    }
+  ]
+}

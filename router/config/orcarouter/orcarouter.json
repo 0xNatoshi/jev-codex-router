@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "orca",
+      "displayName": "OrcaRouter",
+      "kind": "openai-compatible",
+      "ownedBy": "orcarouter",
+      "baseUrl": "https://api.orcarouter.ai/v1",
+      "baseUrlEnv": "ORCAROUTER_BASE_URL",
+      "credential": {
+        "environment": [
+          "ORCAROUTER_API_KEY"
+        ],
+        "file": "orcarouter-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-orcarouter"
+        ],
+        "prompt": "OrcaRouter API key"
+      }
+    }
+  ]
+}

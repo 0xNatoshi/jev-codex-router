@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/tencent/hy4-preview",
+      "gatewayModel": "nousresearch-tencent-hy4-preview",
+      "upstreamModel": "tencent/hy4-preview",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "Hy4 Preview (Nous Research)",
+      "description": "Tencent Hy4 Preview through the Nous Portal.",
+      "priority": 100,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "No thinking"
+        },
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 940000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "hy4-reasoning",
+      "compHash": "nousresearch-tencent-hy4-preview-v1"
+    }
+  ]
+}

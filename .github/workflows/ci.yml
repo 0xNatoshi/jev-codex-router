@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  syntax:
+  jev:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,3 +17,20 @@ jobs:
         run: python -m compileall -q server poc
       - name: Unit tests
         run: python -m unittest discover -s server -p "test_*.py" -v
+
+  embedded-router:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: router
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: router/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high

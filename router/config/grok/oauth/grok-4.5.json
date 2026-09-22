@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "grok-oauth/grok-4.5",
+      "gatewayModel": "grok-oauth-grok-4-5",
+      "upstreamModel": "grok-4.5",
+      "provider": "grok-oauth",
+      "listed": true,
+      "multiAgentVersion": "v2",
+      "displayName": "Grok 4.5 (OAuth)",
+      "description": "Grok 4.5 through the official Grok CLI OAuth session with agentic coding, tool calls, and hosted web/X search.",
+      "priority": 2,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 500000,
+      "autoCompact": 440000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "xai-reasoning",
+      "supportsReasoningSummaries": true,
+      "searchTool": {
+        "mode": "hosted"
+      },
+      "supportsImageDetailOriginal": true,
+      "compHash": "grok-oauth-grok-4-5-v2"
+    }
+  ]
+}
