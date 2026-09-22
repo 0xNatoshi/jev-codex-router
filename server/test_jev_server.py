@@ -274,6 +274,24 @@ class DynamicFallbackDiscovery(unittest.TestCase):
         self.assertNotIn("continue", command)
         self.assertNotIn(json.dumps(payload), command)
 
+    def test_duplicate_routes_and_providers_do_not_consume_both_attempts(self):
+        result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"candidates": [
+                {"slug": "deepseek/first", "provider": "deepseek"},
+                {"slug": "deepseek/first", "provider": "deepseek"},
+                {"slug": "deepseek/sibling", "provider": "deepseek"},
+                {"slug": "zai-api/second", "provider": "zai-api"},
+            ]}),
+        )
+        with mock.patch.object(jev, "FALLBACK_OVERRIDE", False), \
+             mock.patch.object(jev, "_node_binary", return_value="/fixture/node"), \
+             mock.patch.object(jev.subprocess, "run", return_value=result):
+            self.assertEqual(
+                jev.fallback_candidates(jev.SOL, {}),
+                ["deepseek/first", "zai-api/second"],
+            )
+
     def test_explicit_environment_routes_keep_the_operator_order(self):
         with mock.patch.object(jev, "FALLBACK_OVERRIDE", True), \
              mock.patch.object(jev, "GO_STANDARD", "fixture/standard"), \
@@ -300,7 +318,7 @@ class TandemRetry(unittest.TestCase):
     def test_transient_and_allowance_statuses_are_retried(self):
         # opencode Go reports a spent allowance with the same shape a transient
         # outage arrives in, so both are worth the sibling attempt.
-        for status in (408, 425, 429, 500, 502, 503, 504):
+        for status in (402, 408, 425, 429, 500, 502, 503, 504):
             self.assertIn(status, jev.RETRYABLE_TANDEM_STATUS)
 
     def test_a_rejected_request_is_not_retried(self):

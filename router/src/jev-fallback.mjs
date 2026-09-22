@@ -6,6 +6,7 @@ import { rankFailoverCandidates, readFailoverSettings } from "./model-failover.m
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { localOllamaRuntimeSnapshot } from "./ollama-runtime.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { cooldownScope } from "./provider-cooldown.mjs";
 
 const JEV_PROVIDER = "jev";
 const JEV_ROUTE = "jev/auto";
@@ -82,13 +83,32 @@ export function jevFallbackCandidates({
     allowKeyless: true,
   });
 
-  return ranked.slice(0, Math.max(0, Number(limit) || 0)).map(({ tier, model }) => ({
-    slug: model.slug,
-    provider: model.provider,
-    tier,
-    contextWindow: model.contextWindow,
-    local: Boolean(PROVIDERS.get(model.provider)?.keyless),
-  }));
+  // The retry budget counts independent chances, not catalog rows. Duplicate
+  // slugs can enter through an explicit chain, and protocol/model siblings on
+  // one quota family are equally unable to answer after that family's balance
+  // is exhausted. De-duplicate both before applying the limit so one provider
+  // cannot consume every bounded attempt while a distinct provider is ready.
+  const bounded = [];
+  const seenSlugs = new Set();
+  const seenFamilies = new Set();
+  const boundedLimit = Math.max(0, Number(limit) || 0);
+  if (boundedLimit === 0) return bounded;
+  for (const { tier, model } of ranked) {
+    const slug = String(model.slug || "").trim();
+    const family = cooldownScope(model.provider);
+    if (!slug || seenSlugs.has(slug) || (family && seenFamilies.has(family))) continue;
+    seenSlugs.add(slug);
+    if (family) seenFamilies.add(family);
+    bounded.push({
+      slug,
+      provider: model.provider,
+      tier,
+      contextWindow: model.contextWindow,
+      local: Boolean(PROVIDERS.get(model.provider)?.keyless),
+    });
+    if (bounded.length >= boundedLimit) break;
+  }
+  return bounded;
 }
 
 export async function liveJevFallbackCandidates(options = {}) {

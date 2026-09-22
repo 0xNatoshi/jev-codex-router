@@ -851,7 +851,7 @@ test("subagent transport failover stops on the first application response", asyn
   }
 });
 
-test("an exact-route probe never certifies a turn or compaction served by failover", async () => {
+test("an exact-route probe records cooldown evidence without serving a nested failover", async () => {
   const seen = [];
   const gw = await gateway(async (request, response) => {
     assert.equal(
@@ -865,6 +865,7 @@ test("an exact-route probe never certifies a turn or compaction served by failov
       const payload = Buffer.from(QUOTA_BODY, "utf8");
       response.writeHead(429, {
         "Content-Type": "application/json",
+        "Retry-After": "1800",
         "Content-Length": String(payload.length),
       });
       response.end(payload);
@@ -874,14 +875,7 @@ test("an exact-route probe never certifies a turn or compaction served by failov
     response.end(contentSse("fallback-must-not-run"));
   });
   const routerPort = await openPort();
-  const child = run(routerEnv(gw.port, routerPort), {
-    cooldowns: {
-      deepseek: {
-        until: new Date(Date.now() + 30 * 60_000).toISOString(),
-        reason: "out_of_usage",
-      },
-    },
-  });
+  const child = run(routerEnv(gw.port, routerPort));
   const exactHeaders = { "x-codex-router-exact-route": "1" };
   try {
     await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
@@ -916,6 +910,11 @@ test("an exact-route probe never certifies a turn or compaction served by failov
     assert.equal(events.every((event) => event.model === PRIMARY.slug), true);
     assert.equal(events.every((event) => event.failoverFrom === undefined), true);
     assert.doesNotMatch(child.testErrors(), /failover model=/);
+    const cooldowns = JSON.parse(
+      readFileSync(path.join(child.stateDir, "provider-cooldowns.json"), "utf8"),
+    );
+    assert.equal(cooldowns.deepseek.reason, "out_of_usage");
+    assert.ok(Date.parse(cooldowns.deepseek.until) > Date.now());
   } finally {
     await stopChild(child);
     await closeServer(gw.server);

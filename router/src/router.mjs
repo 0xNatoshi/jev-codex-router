@@ -3118,9 +3118,11 @@ async function summarize(request, payload, route, signal, { allowFailover = true
         continue;
       }
     }
-    if (!allowFailover) return { ...last, failed };
-    if (!verdict.swap) return { ...last, failed };
-    recordProviderCooldown(attemptRoute.provider, verdict);
+    // Exact-route is a prohibition on a nested model swap, not a request to
+    // forget the provider's own reset window. Recording it still lets normal
+    // traffic avoid a guaranteed refusal after this diagnostic call ends.
+    if (verdict.swap) recordProviderCooldown(attemptRoute.provider, verdict);
+    if (!allowFailover || !verdict.swap) return { ...last, failed };
     if (index + 1 < attempts.length) {
       logFailover(
         attemptRoute,
@@ -4587,12 +4589,13 @@ async function handleResponses(request, response, requestUrl) {
               retryAfterSeconds: retryAfterSeconds(upstream.headers),
             });
       }
-      if (!upstream.ok && verdict.swap && !exactRouteProbe) {
+      if (!upstream.ok && verdict.swap) {
         // Believe the provider about when it will be back before trying anyone
         // else, so the next turn skips it instead of paying for the same
-        // rejection again.
+        // rejection again. Exact-route suppresses only the nested swap; the
+        // provider's own cooldown evidence remains valid operational state.
         recordProviderCooldown(route.provider, verdict);
-        const moved = await attemptModelFailover({
+        const moved = exactRouteProbe ? undefined : await attemptModelFailover({
           progress: activity.progress,
           request,
           response,

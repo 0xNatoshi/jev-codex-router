@@ -250,6 +250,16 @@ class TandemHandoff(unittest.TestCase):
                 self.assertNotIn(b"temporarily unavailable", body)
                 self.assertIn(b"completed", body)
 
+    def test_payment_required_is_retried_on_the_distinct_sibling(self):
+        Edge.refuse = (jev.GO_FRONTIER,)
+        Edge.refuse_status = 402
+        status, body = self.call()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            [model for model, _effort in Edge.attempts],
+            [jev.GO_FRONTIER, jev.GO_STANDARD],
+        )
+
     def test_single_fallback_does_not_retry_itself(self):
         Edge.refuse = (jev.GO_FRONTIER,)
         Edge.refuse_status = 503

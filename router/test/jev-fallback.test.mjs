@@ -42,6 +42,19 @@ const lmstudio = {
   priority: 950,
   inputModalities: ["text"],
 };
+const cloudSibling = {
+  ...cloud,
+  slug: "deepseek/deepseek-v4.1-flash-alias",
+  upstreamModel: "deepseek-v4.1-flash-alias",
+  priority: 21,
+};
+const secondCloud = {
+  ...cloud,
+  slug: "zai-api/glm-5.2",
+  provider: "zai-api",
+  upstreamModel: "glm-5.2",
+  priority: 22,
+};
 
 function candidates(overrides = {}) {
   return jevFallbackCandidates({
@@ -124,5 +137,19 @@ test("the operator's global failover switch disables dynamic Jev candidates", ()
   assert.deepEqual(
     candidates({ settings: { enabled: false, chain: [] } }),
     [],
+  );
+});
+
+test("duplicate routes and quota siblings do not consume the bounded fallback plan", () => {
+  assert.deepEqual(
+    candidates({
+      models: [cloud, cloudSibling, secondCloud],
+      settings: {
+        enabled: true,
+        chain: [cloud.slug, cloud.slug, cloudSibling.slug, secondCloud.slug],
+      },
+      limit: 2,
+    }).map((entry) => entry.slug),
+    [cloud.slug, secondCloud.slug],
   );
 });
