@@ -87,6 +87,7 @@ import http.client
 import json
 import os
 import re
+import sys
 import threading
 import time
 import urllib.request
@@ -218,7 +219,13 @@ ENVELOPE_SCAN_CHARS = 200_000
 
 def load_key():
     """TYPESAFE_API_KEY: env files win (the process environment can be stale)."""
-    for path in (ENV_PATH, os.path.join(HOME, ".jev.env")):
+    override = os.environ.get("JEV_ENV_FILE", "").strip()
+    paths = (override, ENV_PATH, os.path.join(HOME, ".jev.env"))
+    seen = set()
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
         try:
             with open(path, encoding="utf-8") as fh:
                 for line in fh:
@@ -230,6 +237,19 @@ def load_key():
         except OSError:
             continue
     return os.environ.get("TYPESAFE_API_KEY", "").strip()
+
+
+def warn_if_key_missing():
+    """Make intentional fail-open routing visible without exposing key material."""
+    if load_key():
+        return False
+    print(
+        "[jev-router] warning: TYPESAFE_API_KEY is not configured; "
+        "Jev decisions will fail open to astra",
+        file=sys.stderr,
+        flush=True,
+    )
+    return True
 
 
 def caller_secret():
@@ -1876,6 +1896,7 @@ def main():
     server = LocalServer(LISTEN, Handler)
     protect_logs([LOG_PATH, os.path.join(STATE, "jev-router-debug.jsonl"),
                   os.path.join(STATE, "jev-router-debug-stream.log")])
+    warn_if_key_missing()
     print(f"[jev-router] ready on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()
 

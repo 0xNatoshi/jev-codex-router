@@ -19,6 +19,9 @@ and prints metadata only. The Jev server reads the protected `jev.key` in the
 router's `generic-provider-credentials` directory. All POSTs require a Bearer
 header; the parent adds it automatically. Direct `/ask` clients must add it.
 No OpenAI Platform API key is needed for this local ChatGPT-session relay.
+The Jev key loader checks `JEV_ENV_FILE` first when configured, then
+`~/.hermes/.env`, `~/.jev.env`, and finally `TYPESAFE_API_KEY` from the process
+environment.
 
 ## Lifecycle
 

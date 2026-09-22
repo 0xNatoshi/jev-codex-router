@@ -6,6 +6,7 @@ that model's ladder the decided depth lands on, whether a failed tandem call is
 worth one attempt on the sibling model, and the confidence gate that keeps the
 triptych from over-spending.
 """
+import io
 import json
 import os
 import tempfile
@@ -14,6 +15,69 @@ import unittest
 from unittest import mock
 
 import jev_server as jev
+
+
+class KeyLoading(unittest.TestCase):
+    def write_env(self, path, value):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"TYPESAFE_API_KEY={value}\n")
+
+    def test_explicit_env_file_has_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            override = os.path.join(tmp, "override.env")
+            default = os.path.join(tmp, "default.env")
+            self.write_env(override, "override-key")
+            self.write_env(default, "default-key")
+            with mock.patch.object(jev, "ENV_PATH", default), \
+                 mock.patch.object(jev, "HOME", tmp), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"JEV_ENV_FILE": override, "TYPESAFE_API_KEY": "process-key"},
+                     clear=True,
+                 ):
+                self.assertEqual(jev.load_key(), "override-key")
+
+    def test_missing_override_falls_back_to_default_env_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            default = os.path.join(tmp, "default.env")
+            self.write_env(default, "default-key")
+            with mock.patch.object(jev, "ENV_PATH", default), \
+                 mock.patch.object(jev, "HOME", tmp), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "JEV_ENV_FILE": os.path.join(tmp, "missing.env"),
+                         "TYPESAFE_API_KEY": "process-key",
+                     },
+                     clear=True,
+                 ):
+                self.assertEqual(jev.load_key(), "default-key")
+
+    def test_process_environment_remains_the_last_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(jev, "ENV_PATH", os.path.join(tmp, "missing.env")), \
+                 mock.patch.object(jev, "HOME", tmp), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"JEV_ENV_FILE": "", "TYPESAFE_API_KEY": "process-key"},
+                     clear=True,
+                ):
+                self.assertEqual(jev.load_key(), "process-key")
+
+    def test_missing_key_emits_one_actionable_startup_warning(self):
+        stderr = io.StringIO()
+        with mock.patch.object(jev, "load_key", return_value=""), \
+             mock.patch.object(jev.sys, "stderr", stderr):
+            self.assertTrue(jev.warn_if_key_missing())
+        self.assertIn("TYPESAFE_API_KEY is not configured", stderr.getvalue())
+        self.assertIn("fail open to astra", stderr.getvalue())
+
+    def test_configured_key_stays_silent(self):
+        stderr = io.StringIO()
+        with mock.patch.object(jev, "load_key", return_value="configured"), \
+             mock.patch.object(jev.sys, "stderr", stderr):
+            self.assertFalse(jev.warn_if_key_missing())
+        self.assertEqual(stderr.getvalue(), "")
 
 
 class ResponseIdContinuity(unittest.TestCase):

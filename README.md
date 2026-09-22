@@ -289,6 +289,12 @@ TypeSafe API key for Jev. No separate Codex Router checkout is needed.
 echo 'TYPESAFE_API_KEY=your-key' >> ~/.hermes/.env   # default env file
 ```
 
+Set `JEV_ENV_FILE=/absolute/path/to/custom.env` in the service environment to
+load a different env file first. If it is absent or contains no key, the server
+falls back to `~/.hermes/.env`, then `~/.jev.env`, then `TYPESAFE_API_KEY` from
+the process environment. A keyless startup emits a warning before routing
+continues in fail-open mode.
+
 **2. Install the complete stack from this checkout** in your Terminal:
 
 ```bash
@@ -388,8 +394,9 @@ curl -s http://127.0.0.1:4319/health
 
 ## Security
 
-- **No secrets in this repository.** The server reads `TYPESAFE_API_KEY` from an
-  env file or the process environment; everything else stays on your machine.
+- **No secrets in this repository.** The server reads `TYPESAFE_API_KEY` from
+  `JEV_ENV_FILE` when configured, the default env files, or the process
+  environment; everything else stays on your machine.
 - The server binds `127.0.0.1` only, talks to your local Codex Router only, and
   never logs prompt content beyond a short task excerpt used for calibration.
 - Local decision logs and replay data are git-ignored by default.
