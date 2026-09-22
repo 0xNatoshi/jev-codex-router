@@ -1,5 +1,8 @@
 # Jev Codex Router
 
+Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md),
+[SECURITY.md](SECURITY.md), and the [release checklist](docs/RELEASING.md).
+
 [![ci](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml/badge.svg)](https://github.com/0xNatoshi/jev-codex-router/actions/workflows/ci.yml)
 
 **Per-call model routing for Codex, driven by [Jev](https://docs.typesafe.ai) (TypeSafe System One).**

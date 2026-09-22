@@ -1,5 +1,9 @@
 # Security model
 
+This document describes the embedded fork. For Jev monorepo reporting,
+supported fixes, and release policy, [the root security policy](../SECURITY.md)
+and [release checklist](../docs/RELEASING.md) take precedence.
+
 The router has its own trust root separate from Codex's: a random caller key,
 an internal service key, a private state directory, per-provider credential
 files, and a dedicated service identity and port range. Kimi OAuth is the
@@ -164,7 +168,7 @@ the redacted doctor/support workflows.
 
 ## Reporting a vulnerability
 
-Use [GitHub Private Vulnerability Reporting](https://github.com/duolahypercho/codex-router/security/advisories/new).
+Use [GitHub Private Vulnerability Reporting](https://github.com/0xNatoshi/jev-codex-router/security/advisories/new).
 Do not include technical vulnerability details, access tokens, API keys,
 credential files, full prompts, response bodies, or unredacted logs in a public
 issue.

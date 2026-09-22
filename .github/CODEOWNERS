@@ -1,0 +1,9 @@
+* @0xNatoshi
+
+# Security, routing policy, canonical replay, transport, and release boundaries.
+/SECURITY.md @0xNatoshi
+/server/ @0xNatoshi
+/router/src/ @0xNatoshi
+/install.sh @0xNatoshi
+/.github/workflows/ @0xNatoshi
+/docs/RELEASING.md @0xNatoshi
