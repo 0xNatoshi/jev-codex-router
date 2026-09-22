@@ -95,13 +95,14 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from local_runtime import LocalServer, append_private, authorized, local_secret, protect_logs
+from local_runtime import (
+    STATE, LocalServer, append_private, authorized, local_secret, protect_logs,
+)
 
 from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL, TERRA,
                             TIERS, decision_from_answers, route)
 
 HOME = os.path.expanduser("~")
-STATE = os.path.join(HOME, ".codex", "codex-router")
 ENV_PATH = os.path.join(HOME, ".hermes", ".env")
 CALLER_SECRET_PATH = os.path.join(STATE, "caller-secret")
 OFF_PATH = os.path.join(STATE, "jev-router.off")
@@ -168,7 +169,7 @@ TANDEM_EFFORT = {
 # bounded attempt is worth it before the turn is lost. Nothing has reached
 # the client at this point: the forwarder only returns a retryable status before
 # it writes anything.
-RETRYABLE_TANDEM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+RETRYABLE_TANDEM_STATUS = frozenset({402, 408, 425, 429, 500, 502, 503, 504})
 DRY_MANUAL_PATH = os.path.join(STATE, "jev-router.codex-dry")
 DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
 DRY_COOLDOWN_S = 30 * 60
@@ -530,12 +531,28 @@ def fallback_candidates(native_model, payload):
             check=False,
         )
         parsed = json.loads(result.stdout) if result.returncode == 0 else {}
-        candidates = [
-            entry["slug"] for entry in parsed.get("candidates") or []
-            if isinstance(entry, dict)
-            and isinstance(entry.get("slug"), str)
-            and entry["slug"] != "jev/auto"
-        ][:2]
+        candidates = []
+        seen_slugs = set()
+        seen_providers = set()
+        for entry in parsed.get("candidates") or []:
+            if not isinstance(entry, dict):
+                continue
+            slug = entry.get("slug")
+            provider = entry.get("provider")
+            if not isinstance(slug, str) or slug == "jev/auto" or slug in seen_slugs:
+                continue
+            # Current embedded routers already collapse canonical quota
+            # families. Keep this executor-side guard for stale/mixed installs:
+            # repeated rows from one provider must not consume both attempts.
+            provider = provider.strip() if isinstance(provider, str) else ""
+            if provider and provider in seen_providers:
+                continue
+            seen_slugs.add(slug)
+            if provider:
+                seen_providers.add(provider)
+            candidates.append(slug)
+            if len(candidates) >= 2:
+                break
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         candidates = []
     with _fallback_cache_lock:

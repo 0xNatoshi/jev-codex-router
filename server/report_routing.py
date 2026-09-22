@@ -61,10 +61,11 @@ import statistics
 import sys
 from contextlib import ExitStack
 from itertools import chain
+from local_runtime import STATE
 from routing_policy import POLICY_VERSION
 
-LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
-BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
+LIVE_LOG = os.path.join(STATE, "jev-router-live.jsonl")
+BACKTEST_STATE = os.path.join(STATE, "jev-backtest.json")
 
 LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
 TERRA = "gpt-5.6-terra"

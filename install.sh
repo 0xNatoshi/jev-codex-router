@@ -89,7 +89,8 @@ node "$repo_dir/server/configure-auth.mjs"
 "$router_cli" refresh-catalog
 "$router_dir/bin/control" picker set jev/auto show
 
-bash "$repo_dir/server/install-service.sh"
+CODEX_HOME=$codex_home CODEX_ROUTER_STATE_DIR=$state_dir \
+  bash "$repo_dir/server/install-service.sh"
 python3 "$repo_dir/server/smoke.py"
 
 printf '\nJev Codex Router is installed from %s.\n' "$repo_dir"

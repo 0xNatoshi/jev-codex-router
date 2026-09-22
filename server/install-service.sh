@@ -12,6 +12,21 @@ PYTHON="$(command -v /usr/local/bin/python3 || command -v python3)"
 LABEL="${JEV_ROUTER_LABEL:-com.thibaultsaintjean.jev-router}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOGDIR="$HOME/Library/Logs"
+CODEX_HOME_VALUE="${CODEX_HOME:-$HOME/.codex}"
+STATE_VALUE="${CODEX_ROUTER_STATE_DIR:-${MODEL_ROUTER_STATE_DIR:-$CODEX_HOME_VALUE/codex-router}}"
+
+xml_escape() {
+  printf '%s' "$1" |
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+      -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
+}
+
+CODEX_HOME_XML="$(xml_escape "$CODEX_HOME_VALUE")"
+STATE_XML="$(xml_escape "$STATE_VALUE")"
+JEV_ENV_XML=""
+if [ -n "${JEV_ENV_FILE:-}" ]; then
+  JEV_ENV_XML="$(xml_escape "$JEV_ENV_FILE")"
+fi
 
 [ -x "$PYTHON" ] || { echo "python3 not found"; exit 1; }
 mkdir -p "$LOGDIR"
@@ -32,6 +47,14 @@ cat > "$PLIST" <<EOF
   <key>StandardOutPath</key><string>$LOGDIR/jev-router.out.log</string>
   <key>StandardErrorPath</key><string>$LOGDIR/jev-router.err.log</string>
   <key>WorkingDirectory</key><string>$REPO</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CODEX_HOME</key><string>$CODEX_HOME_XML</string>
+    <key>CODEX_ROUTER_STATE_DIR</key><string>$STATE_XML</string>
+$(if [ -n "$JEV_ENV_XML" ]; then
+    printf '    <key>JEV_ENV_FILE</key><string>%s</string>\n' "$JEV_ENV_XML"
+  fi)
+  </dict>
 </dict>
 </plist>
 EOF

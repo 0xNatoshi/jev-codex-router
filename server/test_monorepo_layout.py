@@ -30,6 +30,12 @@ class EmbeddedRouterLayout(unittest.TestCase):
         self.assertIn('"$router_dir/bin/install" --prepare-only', installer)
         self.assertNotIn('"$router_dir/install.sh" --prepare-only', installer)
         self.assertIn('"$router_dir/bin/install" --take-over-managed-router', installer)
+        self.assertIn("CODEX_ROUTER_STATE_DIR=$state_dir", installer)
+
+        service = (ROOT / "server" / "install-service.sh").read_text()
+        self.assertIn("<key>CODEX_HOME</key>", service)
+        self.assertIn("<key>CODEX_ROUTER_STATE_DIR</key>", service)
+        self.assertIn("<key>JEV_ENV_FILE</key>", service)
 
     def test_model_configuration_is_idempotent_and_preserves_other_routes(self):
         with tempfile.TemporaryDirectory() as temp:

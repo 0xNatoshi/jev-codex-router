@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from healthcheck import healthy
+from local_runtime import STATE
 from routing_policy import POLICY_VERSION
 
 
@@ -17,7 +18,7 @@ def main():
             raise RuntimeError("running policy differs from checkout; reload required")
     finally:
         health.close()
-    secret = (Path.home() / ".codex/codex-router/caller-secret").read_text().strip()
+    secret = (Path(STATE) / "caller-secret").read_text().strip()
     connection = http.client.HTTPConnection("127.0.0.1", 4202, timeout=120)
     result = {"policy": POLICY_VERSION, "model": None, "status": None}
     try:

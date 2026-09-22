@@ -5,7 +5,23 @@ import stat
 import threading
 from http.server import ThreadingHTTPServer
 
-STATE = os.path.expanduser("~/.codex/codex-router")
+
+def resolve_runtime_paths(environ=None, home=None):
+    """Resolve the same configurable state hierarchy as the embedded router."""
+    env = os.environ if environ is None else environ
+    owner_home = os.path.expanduser("~") if home is None else str(home)
+    codex_home = os.path.expanduser(
+        env.get("CODEX_HOME") or os.path.join(owner_home, ".codex")
+    )
+    state = os.path.expanduser(
+        env.get("CODEX_ROUTER_STATE_DIR")
+        or env.get("MODEL_ROUTER_STATE_DIR")
+        or os.path.join(codex_home, "codex-router")
+    )
+    return owner_home, codex_home, state
+
+
+HOME, CODEX_HOME, STATE = resolve_runtime_paths()
 AUTH_PATH = os.path.join(STATE, "generic-provider-credentials", "jev.key")
 MAX_LOG_BYTES = 8 * 1024 * 1024
 _file_lock = threading.Lock()
