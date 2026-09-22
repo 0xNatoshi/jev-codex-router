@@ -13,7 +13,7 @@ LABEL="${JEV_ROUTER_LABEL:-com.thibaultsaintjean.jev-router}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOGDIR="$HOME/Library/Logs"
 CODEX_HOME_VALUE="${CODEX_HOME:-$HOME/.codex}"
-STATE_VALUE="${CODEX_ROUTER_STATE_DIR:-${MODEL_ROUTER_STATE_DIR:-$CODEX_HOME_VALUE/codex-router}}"
+STATE_VALUE="${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-$CODEX_HOME_VALUE/codex-router}}}"
 
 xml_escape() {
   printf '%s' "$1" |

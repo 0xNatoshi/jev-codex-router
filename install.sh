@@ -16,7 +16,7 @@ repo_dir=$(CDPATH='' cd -P -- "$(dirname -- "$self")" && pwd -P)
 router_dir=$repo_dir/router
 router_cli=$router_dir/bin/codex-router
 codex_home=${CODEX_HOME:-$HOME/.codex}
-state_dir=${CODEX_ROUTER_STATE_DIR:-$codex_home/codex-router}
+state_dir=${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-$codex_home/codex-router}}}
 
 usage() {
   cat <<'EOF'

@@ -14,8 +14,9 @@ def resolve_runtime_paths(environ=None, home=None):
         env.get("CODEX_HOME") or os.path.join(owner_home, ".codex")
     )
     state = os.path.expanduser(
-        env.get("CODEX_ROUTER_STATE_DIR")
-        or env.get("MODEL_ROUTER_STATE_DIR")
+        env.get("MODEL_ROUTER_STATE_DIR")
+        or env.get("CODEX_ROUTER_STATE_DIR")
+        or env.get("KIMI_CODEX_STATE_DIR")
         or os.path.join(codex_home, "codex-router")
     )
     return owner_home, codex_home, state

@@ -25,7 +25,7 @@ class RuntimePaths(unittest.TestCase):
             "MODEL_ROUTER_STATE_DIR": "/tmp/model-router-state",
             "CODEX_ROUTER_STATE_DIR": "/tmp/codex-router-state",
         }, "/Users/example")
-        self.assertEqual(state, "/tmp/codex-router-state")
+        self.assertEqual(state, "/tmp/model-router-state")
 
     def test_model_router_state_is_the_compatible_secondary_override(self):
         _, _, state = resolve_runtime_paths({
