@@ -1371,6 +1371,10 @@ class SummaryMarker:
         self._headed = set()  # messages whose streamed text already received a header
         self._header_parts = {}  # first nonempty text part of each message
         self._response_id = None  # the id this stream's completion must repeat
+        self._response = None  # response.created snapshot for a synthetic failure terminal
+        self._sequence_number = -1
+        self.exposed = False
+        self.transport_error = None
         self.usage = None
         self.terminal_type = None
 
@@ -1493,10 +1497,27 @@ class SummaryMarker:
             out.append(self._emit(block))
             return out
         dtype = data.get("type")
+        sequence_number = data.get("sequence_number")
+        if isinstance(sequence_number, int) and not isinstance(sequence_number, bool):
+            self._sequence_number = max(self._sequence_number, sequence_number)
         if dtype == "response.created":
             response = data.get("response")
             if isinstance(response, dict) and isinstance(response.get("id"), str):
                 self._response_id = response["id"]
+                self._response = json.loads(json.dumps(response))
+        elif (
+            isinstance(dtype, str)
+            and dtype.startswith("response.")
+            and dtype not in (
+                "response.queued",
+                "response.in_progress",
+                *TERMINAL_EVENT_TYPES,
+            )
+        ):
+            # Once any model/tool/reasoning event is exposed, replaying the
+            # canonical request on another model could duplicate visible text
+            # or a side effect. Lifecycle-only prologues remain retryable.
+            self.exposed = True
         if self.signature and dtype == "response.output_item.added":
             item = data.get("item")
             if isinstance(item, dict) and item.get("type") == "message":
@@ -1590,6 +1611,36 @@ class SummaryMarker:
         self._flush_held(out)
         out.append(self._emit(block))
         return out
+
+    def fail_transport(self, message):
+        """Close an already-exposed stream with a valid Responses terminal."""
+        out = []
+        self._flush_held(out)
+        response = (
+            json.loads(json.dumps(self._response))
+            if isinstance(self._response, dict)
+            else {}
+        )
+        response.setdefault("id", self._response_id or "resp_jev_transport_failure")
+        response.setdefault("object", "response")
+        response.setdefault("output", [])
+        response["status"] = "failed"
+        response["error"] = {"code": "server_error", "message": message}
+        if self.usage is not None:
+            response["usage"] = self.usage
+        event = {
+            "type": "response.failed",
+            "sequence_number": self._sequence_number + 1,
+            "response": response,
+        }
+        self.transport_error = message
+        self.terminal_type = "response.failed"
+        out.append(
+            "event: response.failed\n"
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        )
+        out.append("data: [DONE]\n\n")
+        return "".join(out)
 
     def feed(self, raw):
         self._buf += self._decoder.decode(raw)
@@ -1974,8 +2025,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(unwritten)
 
         final_attempt = None
+        observed_attempt = None
         for attempt in reversed(self._attempts):
-            if attempt.get("model") == model and attempt.get("status") == 200:
+            if attempt.get("model") != model:
+                continue
+            if observed_attempt is None:
+                observed_attempt = attempt
+            if attempt.get("status") == 200:
                 final_attempt = attempt
                 break
         completed_status = (
@@ -2023,6 +2079,9 @@ class Handler(BaseHTTPRequestHandler):
             "jev_ms": jev_ms,
             "total_ms": int((time.time() - t0) * 1000),
             "status": status,
+            "completion_status": (
+                observed_attempt.get("completion") if observed_attempt else None
+            ),
             "stream": stream_requested,
             "out": out_kind,
             "uctype": ctype,
@@ -2058,7 +2117,8 @@ class Handler(BaseHTTPRequestHandler):
         ctype = ""
         attempt = {"model": model, "effort": effective_effort,
                    "speed": payload.get("service_tier"), "status": None,
-                   "terminal_type": None, "usage": None}
+                   "http_status": None, "completion": None,
+                   "terminal_type": None, "transport_error": None, "usage": None}
         self._attempts.append(attempt)
         markerer = None
         try:
@@ -2081,6 +2141,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             resp = conn.getresponse()
             status = resp.status
+            attempt["http_status"] = status
             ctype = (resp.getheader("Content-Type") or "").strip()
             # The local caller edge sets NO Content-Type on SSE streams. For a
             # streaming request, a 200 response IS an SSE stream: force the
@@ -2092,36 +2153,95 @@ class Handler(BaseHTTPRequestHandler):
 
             if is_sse and stream_requested:
                 out_kind = "sse"
-                self.send_response(status)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.end_headers()
                 markerer = SummaryMarker(marker, signature)
-                while True:
-                    chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
-                    if not chunk:
-                        break
-                    if debug:
-                        try:
-                            # Capture only transport counters, never generated text,
-                            # tool arguments or raw streams which may contain secrets.
-                            append_private(os.path.join(STATE, "jev-router-debug-stream.log"),
-                                           json.dumps({"model": model, "bytes": len(chunk)}) + "\n")
-                        except OSError:
-                            pass
-                    piece = markerer.feed(chunk).encode("utf-8")
-                    if piece:
-                        self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
+                pending = bytearray()
+                stream_started = False
+                client_connected = True
+                transport_error = None
+
+                def write_piece(piece):
+                    nonlocal stream_started, client_connected
+                    if not piece or not client_connected:
+                        return client_connected
+                    try:
+                        if not stream_started:
+                            self.send_response(status)
+                            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                            self.send_header("Transfer-Encoding", "chunked")
+                            self.end_headers()
+                            stream_started = True
+                        self.wfile.write(
+                            f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n"
+                        )
                         self.wfile.flush()
+                        return True
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        client_connected = False
+                        return False
+
+                try:
+                    while True:
+                        chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
+                        if not chunk:
+                            break
+                        if debug:
+                            try:
+                                # Capture only transport counters, never generated text,
+                                # tool arguments or raw streams which may contain secrets.
+                                append_private(
+                                    os.path.join(STATE, "jev-router-debug-stream.log"),
+                                    json.dumps({"model": model, "bytes": len(chunk)}) + "\n",
+                                )
+                            except OSError:
+                                pass
+                        piece = markerer.feed(chunk).encode("utf-8")
+                        if piece:
+                            pending.extend(piece)
+                        if markerer.exposed or markerer.terminal_type:
+                            connected = write_piece(bytes(pending))
+                            pending.clear()
+                            if not connected:
+                                break
+                except (OSError, http.client.HTTPException) as exc:
+                    transport_error = f"{type(exc).__name__}: upstream stream interrupted"
+
+                if not client_connected:
+                    attempt["completion"] = "client_disconnected"
+                    attempt["transport_error"] = "downstream_client_disconnected"
+                    return status, out_kind, ctype, False, None, None
+
                 piece = markerer.flush().encode("utf-8")
                 if piece:
-                    self.wfile.write(f"{len(piece):X}\r\n".encode("ascii") + piece + b"\r\n")
-                    self.wfile.flush()
-                if not markerer.terminal_type:
-                    piece = b'data: {"type":"error","error":{"message":"upstream stream ended before a terminal event"}}\n\n'
-                    self.wfile.write(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
+                    pending.extend(piece)
+                if markerer.terminal_type:
+                    write_piece(bytes(pending))
+                    pending.clear()
+                elif not markerer.exposed:
+                    # No user-visible output or tool call crossed the relay, so
+                    # the caller can safely retry this exact canonical request.
+                    status = 502
+                    attempt["completion"] = "interrupted_precontent"
+                    attempt["transport_error"] = transport_error or "upstream_eof"
+                    data = b'{"error":{"message":"upstream stream ended before a terminal event"}}'
+                    return status, "json", "application/json", False, data, None
+                else:
+                    write_piece(bytes(pending))
+                    pending.clear()
+                    attempt["transport_error"] = transport_error or "upstream_eof"
+                    failure = markerer.fail_transport(
+                        "upstream stream ended before a terminal event"
+                    ).encode("utf-8")
+                    write_piece(failure)
+
+                if stream_started and client_connected:
+                    try:
+                        self.wfile.write(b"0\r\n\r\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        client_connected = False
+                if not client_connected:
+                    attempt["completion"] = "client_disconnected"
+                    attempt["transport_error"] = "downstream_client_disconnected"
             else:
                 out_kind = "json"
                 data = resp.read()
@@ -2132,6 +2252,7 @@ class Handler(BaseHTTPRequestHandler):
                     # model gets this call first. The refusal also carries the
                     # instant the window reopens, which is how long the flip lasts.
                     quota = bool(status == 429 or QUOTA_RX.search(data.decode("utf-8", "replace")))
+                    attempt["completion"] = "http_error"
                     return status, out_kind, ctype, quota, data, quota_reset_at(resp.headers, data)
                 # The caller edge always streams; rebuild a proper single JSON
                 # object for non-stream callers (compactions, litellm's
@@ -2141,6 +2262,8 @@ class Handler(BaseHTTPRequestHandler):
                     if assembled is None:
                         status = 502
                         assembled = {"error": {"message": "upstream stream ended before a terminal event"}}
+                        attempt["completion"] = "interrupted_precontent"
+                        attempt["transport_error"] = "upstream_eof"
                     if assembled is not None:
                         attempt["usage"] = usage_counts(assembled.get("usage"))
                         response_status = assembled.get("status")
@@ -2159,15 +2282,24 @@ class Handler(BaseHTTPRequestHandler):
             return status, out_kind, ctype, False, None, None
         except (OSError, http.client.HTTPException):
             if self._response_started:
-                raise
+                attempt["completion"] = "transport_failed"
+                attempt["transport_error"] = "upstream_transport_unavailable"
+                return status or 502, out_kind or "sse", ctype, False, None, None
             status = 502
             data = b'{"error":{"message":"upstream transport unavailable"}}'
+            attempt["completion"] = "transport_unavailable"
+            attempt["transport_error"] = "upstream_transport_unavailable"
             return status, "json", "application/json", False, data, None
         finally:
             attempt["status"] = status
             if markerer is not None:
                 attempt["usage"] = markerer.usage
                 attempt["terminal_type"] = markerer.terminal_type
+                attempt["transport_error"] = (
+                    attempt["transport_error"] or markerer.transport_error
+                )
+            if attempt["completion"] is None:
+                attempt["completion"] = attempt["terminal_type"] or "no_terminal"
             conn.close()
 
 

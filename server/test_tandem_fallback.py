@@ -59,6 +59,7 @@ class Edge(BaseHTTPRequestHandler):
     body = COMPLETED
     reset_at = 0
     refuse_status = 429
+    disconnect_after = None
 
     def log_message(self, *args):
         pass
@@ -85,9 +86,15 @@ class Edge(BaseHTTPRequestHandler):
             data = type(self).body
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(data)))
+        declared = len(data) + (1 if type(self).disconnect_after is not None else 0)
+        self.send_header("Content-Length", str(declared))
         self.end_headers()
-        self.wfile.write(data)
+        if type(self).disconnect_after is None:
+            self.wfile.write(data)
+        else:
+            self.wfile.write(data[:type(self).disconnect_after])
+            self.wfile.flush()
+            self.close_connection = True
 
 
 class TandemHandoff(unittest.TestCase):
@@ -100,6 +107,7 @@ class TandemHandoff(unittest.TestCase):
         Edge.body = COMPLETED
         Edge.reset_at = 0
         Edge.refuse_status = 429
+        Edge.disconnect_after = None
         # Tests must not read the installed sentinels, write the live decision
         # log, or depend on the user's current fallback model configuration.
         tmp = self.enterContext(tempfile.TemporaryDirectory())
@@ -285,6 +293,63 @@ class TandemHandoff(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertIn("error", json.loads(body))
 
+    def test_precontent_disconnect_is_retryable_and_logged_as_interrupted(self):
+        Edge.body = (
+            b'data: {"type":"response.created","sequence_number":0,'
+            b'"response":{"id":"r","object":"response","status":"in_progress","output":[]}}\n\n'
+        )
+        Edge.disconnect_after = len(Edge.body)
+        status, body = self.call(stream=True)
+        self.assertEqual(status, 502)
+        self.assertIn("terminal event", json.loads(body)["error"]["message"])
+        self.assertEqual(
+            [model for model, _effort in Edge.attempts],
+            [jev.GO_FRONTIER, jev.GO_STANDARD],
+            "a lifecycle-only disconnect remains safe to retry",
+        )
+        with open(jev.LOG_PATH) as handle:
+            record = json.loads(handle.readlines()[-1])
+        self.assertEqual(len(record["attempts"]), 2)
+        for attempt in record["attempts"]:
+            self.assertEqual(attempt["http_status"], 200)
+            self.assertEqual(attempt["status"], 502)
+            self.assertEqual(attempt["completion"], "interrupted_precontent")
+            self.assertIsNone(attempt["terminal_type"])
+        self.assertEqual(record["completion_status"], "interrupted_precontent")
+
+    def test_midstream_disconnect_gets_failed_terminal_without_replay(self):
+        Edge.body = b"".join((
+            b'data: {"type":"response.created","sequence_number":0,'
+            b'"response":{"id":"r","object":"response","status":"in_progress","output":[]}}\n\n',
+            b'data: {"type":"response.output_text.delta","sequence_number":1,'
+            b'"item_id":"m","output_index":0,"content_index":0,"delta":"partial"}\n\n',
+        ))
+        Edge.disconnect_after = len(Edge.body)
+        status, body = self.call(stream=True)
+        self.assertEqual(status, 200)
+        events = [
+            json.loads(line[6:])
+            for line in body.decode().splitlines()
+            if line.startswith("data: ") and line[6:] != "[DONE]"
+        ]
+        self.assertEqual(events[-1]["type"], "response.failed")
+        self.assertEqual(events[-1]["response"]["status"], "failed")
+        self.assertEqual(events[-1]["response"]["error"]["code"], "server_error")
+        self.assertEqual(
+            [model for model, _effort in Edge.attempts],
+            [jev.GO_FRONTIER],
+            "visible partial output must never be replayed on the sibling",
+        )
+        with open(jev.LOG_PATH) as handle:
+            record = json.loads(handle.readlines()[-1])
+        attempt = record["attempts"][0]
+        self.assertEqual(attempt["http_status"], 200)
+        self.assertEqual(attempt["status"], 200)
+        self.assertEqual(attempt["completion"], "response.failed")
+        self.assertEqual(attempt["terminal_type"], "response.failed")
+        self.assertTrue(attempt["transport_error"])
+        self.assertEqual(record["completion_status"], "response.failed")
+
     def test_structured_outputs_never_receive_a_display_header(self):
         with open(jev.SIGNATURE_PATH, "w"):
             pass
@@ -386,6 +451,7 @@ class TandemHandoff(unittest.TestCase):
                     self.assertEqual(len(record["attempts"]), 1)
                     attempt = record["attempts"][0]
                     self.assertEqual(attempt["terminal_type"], "response.completed")
+                    self.assertEqual(attempt["completion"], "response.completed")
                     self.assertEqual(attempt["usage"]["cached_input_tokens"], 80)
                     self.assertEqual(attempt["usage"]["reasoning_tokens"], 15)
 
