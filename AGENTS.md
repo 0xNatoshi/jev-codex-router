@@ -104,14 +104,17 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
   TypeSafe account is out of credits; `503` means no key was found.
 - **Kill switch** (instant, no restart): `touch ~/.codex/codex-router/jev-router.off`
   → the server relays to astra without calling Jev. Remove the file to re-enable.
-- **Codex-dry tandem** (only while native usage is exhausted):
-  `touch ~/.codex/codex-router/jev-router.codex-dry` → calls go to the configured
-  fallback (default `deepseek/deepseek-v4.1-flash` for all tiers). Set
-  `JEV_FALLBACK_STANDARD` / `JEV_FALLBACK_FRONTIER` to existing configured routes
-  at service startup for distinct targets; retries never repeat an identical target.
+- **Codex-dry fallback** (only while native usage is exhausted):
+  `touch ~/.codex/codex-router/jev-router.codex-dry` → calls go to at most two
+  compatible routes discovered from this machine's configured models. OpenAI is
+  always attempted first while its allowance works. A local model additionally
+  requires a live runtime and a persisted successful Codex agent check
+  (`router/bin/control failover qualify <local-model-slug>`).
+  `JEV_FALLBACK_STANDARD` / `JEV_FALLBACK_FRONTIER` remain optional static
+  overrides; retries never repeat an identical target.
   Remove the file to return to the
   luna/terra/sol/astra native model ladder. An automatic flip (429 / usage-limit response) also
-  retries the failed call on the tandem, then lasts until the instant the edge
+  retries the failed call on the discovered fallback, then lasts until the instant the edge
   announced for the window reset (30 minutes when the refusal announces none,
   one week at most) — `cat ~/.codex/codex-router/jev-router.codex-dry.json`
   reads the reason and `until_iso` — and is cleared by the next successful
@@ -119,7 +122,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 - **Thread display**: streamed reasoning summaries get the routed tag appended
   in place ( · 🧠sol:low · , separators on both sides so the next summary part
   never glues to the tag; one glyph per route — ⚡luna, 🧠sol, 🚀astra,
-  🐳deepseek/✨glm in tandem) — the picked model shows inside each call's thinking
+  external routes use their own glyph) — the picked model shows inside each call's thinking
   block in the Codex thread.
 - **Shadow mode**: `touch ~/.codex/codex-router/jev-router.shadow` → decisions
   are logged (`would` field) while every call is still served by astra.
@@ -150,8 +153,8 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 | `{"detail":"Stream must be set to true"}` | the caller edge streams only | send `"stream": true`; the bundled server forces it |
 | HTTP 502 `provider_api_proxy_error` on jev-auto | server-side error | check the `status`/`out` fields in `jev-router-live.jsonl`, and the server's stderr log |
 | "Jev Codex Router" absent from the picker | not published/visible, or Codex not restarted | `refresh-catalog`, `control picker set jev/auto show`, full Codex restart |
-| Native 429 / "usage limit" while routing | ChatGPT usage window exhausted | expected: the Codex-dry tandem takes over (`jev-router.codex-dry.json`); delete the manual file to re-probe sooner |
-| Jev calls fail with `402 Payment Required` (`gate=codex_dry(fallback)`, `tier` null in the log) | the TypeSafe account is out of credits | expected: the router keeps serving through the tandem; add credits at console.typesafe.ai to restore classification |
+| Native 429 / "usage limit" while routing | ChatGPT usage window exhausted | expected: the Codex-dry fallback takes over (`jev-router.codex-dry.json`); delete the manual file to re-probe sooner |
+| Jev calls fail with `402 Payment Required` (`gate=codex_dry(fallback)`, `tier` null in the log) | the TypeSafe account is out of credits | expected: the router keeps serving through a configured fallback; add credits at console.typesafe.ai to restore classification |
 | `Unknown API gateway model: jev-auto` | catalog not republished | `bin/jev-codex-router router refresh-catalog` |
 | Jev returns HTTP 422 | request body missing `"model"` | always send `"model": "jev-latest"` to the System One API |
 | Native calls fail after a few days | shared session expired | re-run `chatgpt-session enable` |
@@ -159,7 +162,7 @@ tail -1 ~/.codex/codex-router/jev-router-live.jsonl
 
 ## Latency & cost notes
 
-- The current policy is `split-v10-measured-cache`: one System One request asks
+- The current policy is `split-v11-native-first-fallback`: one System One request asks
   four independent Choice questions with explicit criteria — mandatory Astra
   policy, capability tier, reasoning effort and a bounded route lease. New user
   turns, errors, compactions and changed tool chains are always re-evaluated;

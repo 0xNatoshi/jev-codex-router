@@ -462,6 +462,7 @@ export function rankFailoverCandidates(
     chain = [],
     now,
     allowSameFamily = false,
+    allowKeyless = false,
   } = options;
   const fromProvider = cooldownScope(from?.provider || "");
   // An explicitly captured absence is part of the request contract. `??`
@@ -502,7 +503,7 @@ export function rankFailoverCandidates(
     // failover that lands on a dead localhost has turned an honest quota error
     // into a connection error. Same rule the vision bridge applies to its own
     // local engine -- name one in the chain and it is used.
-    .filter((model) => !PROVIDERS.get(model.provider)?.keyless)
+    .filter((model) => allowKeyless || !PROVIDERS.get(model.provider)?.keyless)
     .map((model) => ({ tier: failoverTier(model), model }))
     .sort(
       (left, right) =>

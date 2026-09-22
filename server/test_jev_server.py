@@ -242,6 +242,60 @@ class DryTandem(unittest.TestCase):
             self.assertIsNone(jev.other_tandem("fixture/a"))
 
 
+class DynamicFallbackDiscovery(unittest.TestCase):
+    def setUp(self):
+        with jev._fallback_cache_lock:
+            jev._fallback_cache.clear()
+
+    def test_dynamic_candidates_are_local_to_the_executor_and_never_include_jev(self):
+        result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"candidates": [
+                {"slug": "jev/auto"},
+                {"slug": "deepseek/deepseek-v4.1-flash"},
+                {"slug": "opencode-go/glm-5.3-flash"},
+            ]}),
+        )
+        payload = {
+            "model": "auto",
+            "input": [{"role": "user", "content": "continue"}],
+            "tools": [{"type": "web_search_preview"}],
+        }
+        with mock.patch.object(jev, "FALLBACK_OVERRIDE", False), \
+             mock.patch.object(jev, "_node_binary", return_value="/fixture/node"), \
+             mock.patch.object(jev.subprocess, "run", return_value=result) as run:
+            candidates = jev.fallback_candidates(jev.SOL, payload)
+        self.assertEqual(candidates, [
+            "deepseek/deepseek-v4.1-flash",
+            "opencode-go/glm-5.3-flash",
+        ])
+        command = run.call_args.args[0]
+        self.assertIn("--search-mode", command)
+        self.assertNotIn("continue", command)
+        self.assertNotIn(json.dumps(payload), command)
+
+    def test_explicit_environment_routes_keep_the_operator_order(self):
+        with mock.patch.object(jev, "FALLBACK_OVERRIDE", True), \
+             mock.patch.object(jev, "GO_STANDARD", "fixture/standard"), \
+             mock.patch.object(jev, "GO_FRONTIER", "fixture/frontier"), \
+             mock.patch.object(jev, "GO_TANDEM", ("fixture/standard", "fixture/frontier")):
+            self.assertEqual(
+                jev.fallback_candidates(jev.ASTRA, {}),
+                ["fixture/frontier", "fixture/standard"],
+            )
+            self.assertEqual(
+                jev.fallback_candidates(jev.SOL, {}),
+                ["fixture/standard", "fixture/frontier"],
+            )
+
+    def test_explicit_routes_cannot_recurse_or_retry_the_exhausted_native_ladder(self):
+        with mock.patch.object(jev, "FALLBACK_OVERRIDE", True), \
+             mock.patch.object(jev, "GO_STANDARD", "jev/auto"), \
+             mock.patch.object(jev, "GO_FRONTIER", jev.ASTRA), \
+             mock.patch.object(jev, "GO_TANDEM", ("jev/auto", jev.ASTRA)):
+            self.assertEqual(jev.fallback_candidates(jev.ASTRA, {}), [])
+
+
 class TandemRetry(unittest.TestCase):
     def test_transient_and_allowance_statuses_are_retried(self):
         # opencode Go reports a spent allowance with the same shape a transient

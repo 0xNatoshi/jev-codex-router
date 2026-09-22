@@ -46,10 +46,10 @@ Codex ──▶ Codex Router (:4202)
   otherwise destroy context before this server could relay it.
 - **Fail-open** — any Jev error keeps the turn alive (safe fallback route).
 - **Kill switch** — a sentinel file routes without Jev, instantly.
-- **Quota fallback** — native quota exhaustion switches to the configured
-  fallback. The default is one `deepseek/deepseek-v4.1-flash` target, not a
-  two-model tandem. A second attempt is made only when a distinct target is
-  configured, and before emitting any retryable error to the client.
+- **Quota fallback** — only observed native quota exhaustion activates a
+  locally discovered, compatible configured route. A second attempt is made
+  only when a distinct candidate exists, and before emitting any retryable
+  error to the client.
 - **Decision log** — every routed turn is logged locally for calibration
   (`~/.codex/codex-router/jev-router-live.jsonl`), never published.
 
@@ -83,7 +83,7 @@ reasoning. These profiles are routing priors, not measured capability guarantees
 Terra attempts are counted as native in reports; its ChatGPT credit estimate
 remains unknown until a verified credit rate is configured.
 
-Policy `split-v10-measured-cache` judges remaining work rather than inheriting a
+Policy `split-v11-native-first-fallback` judges remaining work rather than inheriting a
 completed review's category. Explicit mechanical follow-through can use Luna;
 implied intent, underspecified goals and autonomous investigation favor Sol.
 The objective includes correction and clarification costs. There is no
@@ -130,12 +130,25 @@ last-message-only view.
 
 The native model ladder is the policy **unless** the ChatGPT usage window is exhausted
 (manual sentinel file, or an automatic flip on a 429 / usage-limit response,
-which also retries the failed call on the tandem). While dry:
+which also retries the failed call). OpenAI remains strictly first while the
+native allowance answers: provider discovery is not even run on healthy turns.
 
-The default for every native tier is `deepseek/deepseek-v4.1-flash`.
-`JEV_FALLBACK_STANDARD` and `JEV_FALLBACK_FRONTIER` may select existing configured
-routes at service startup. The frontier defaults to the standard target; a
-duplicate target is never retried as its own sibling.
+While dry, the embedded router derives at most two candidates from the models
+that this machine has configured, enabled and exposed. `jev/auto` is always
+excluded to prevent recursion. Hidden, cooled-down, context-too-small and
+capability-incompatible routes are removed. A local Ollama model is eligible
+only when its runtime currently answers and its persisted real-Codex check says
+`agentCapable=true`; LM Studio additionally has to report that exact model from
+its live `/models` endpoint. Qualify any published local route explicitly with
+`router/bin/control failover qualify <local-model-slug>`. The expensive real
+Codex check is never launched inside a user turn.
+The result is cached locally for 30 seconds. None of this inventory is sent to
+Jev or added to its paid input.
+
+`JEV_FALLBACK_STANDARD` and `JEV_FALLBACK_FRONTIER` remain explicit operator
+overrides. If either is set at service startup, the static standard/frontier
+order replaces discovery; a duplicate target is never retried as its own
+sibling.
 
 An automatic flip lasts until the instant the edge announced for the window
 reset, so the first call after the quota returns is served by the native model ladder
@@ -145,11 +158,12 @@ by the first successful native call, and the manual sentinel file is never
 auto-cleared.
 
 Two details keep the substitute transparent. The decided depth travels with the
-call, mapped onto the Go ladder — `low` stays `low`, `medium` and `high` become
+call, mapped onto the fallback ladder — `low` stays `low`, `medium` and `high` become
 `high`, `xhigh` or above become `max` — because those models declare three rungs
 where the native model ladder exposes five, and the API forwarder clamps the value once more
-onto the route's own ladder. When two distinct fallback targets exist, a
-retryable failure is retained until one sibling attempt completes. Otherwise
+onto the route's own ladder. Each fallback attempt is an exact route, preventing
+the parent failover from looping through Jev. When two distinct targets exist,
+a retryable failure is retained until one sibling attempt completes. Otherwise
 the original refusal is returned once.
 
 A third detail keeps the relay legal for the Responses consumer in front of it.
@@ -172,7 +186,7 @@ python3 server/report_routing.py --days 30 --json            # all versions, JSO
 ```
 
 It prints the served model distribution (luna/terra/sol/astra, plus the Codex-dry
-tandem when it took over: turns + %), the share of turns served by the cheapest
+external fallback when it took over: turns + %), the share of turns served by the cheapest
 tier, the share of turns held below the confidence gate, the gates encountered,
 median latency (end-to-end and Jev's own decision time), observed prompt-cache
 reads by model and hashed session, and an estimate of the real cost against two
@@ -356,12 +370,12 @@ per-call attribution are excluded from the historical cost baseline.
 | Action | Command |
 |---|---|
 | Watch decisions | `tail -f ~/.codex/codex-router/jev-router-live.jsonl` |
-| See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; 🐳 deepseek / ✨ glm while the Codex-dry tandem is serving |
+| See the picked model in the thread | every reasoning summary part carries the routed tag, separators on both sides: ` · 🧠sol:low · ` — one glyph per route: ⚡ luna (economical) · 🧠 sol (workhorse) · 🚀 astra (frontier) · 🌍 terra; external fallbacks show their own route |
 | Show the model and thinking above every assistant message | `touch ~/.codex/codex-router/jev-router.signature` — a leading `**🧠 sol · thinking: high**` appears from the first text fragment, including commentary and unphased replies; remove the file to disable |
 | Shadow mode (decide + log, serve astra) | `touch ~/.codex/codex-router/jev-router.shadow` |
 | Debug counters (no raw content) | `touch ~/.codex/codex-router/jev-router.debug` |
 | Kill switch (no Jev → frontier) | `touch ~/.codex/codex-router/jev-router.off` (delete the file to re-enable) |
-| Force the Codex-dry tandem | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |
+| Force the Codex-dry fallback | `touch ~/.codex/codex-router/jev-router.codex-dry` (delete the file to return to luna/terra/sol/astra) |
 | Inspect the dry auto state | `cat ~/.codex/codex-router/jev-router.codex-dry.json` (reason + expiry; auto-cleared by the next successful native call) |
 | Update the complete monorepo | `bin/jev-codex-router update` |
 | Hide the model | `router/bin/control picker set jev/auto hide` |

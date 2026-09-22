@@ -16,7 +16,7 @@ speed. Confidence is logged without changing other valid choices. There are no
 keyword overrides or production target proportions.
 Technical Jev failures remain fail-open to astra @medium and are logged separately.
 
-Measured routing (v10): every user turn, error, compaction and material tool-chain
+Measured routing (v11): every user turn, error, compaction and material tool-chain
 transition is judged independently. A Jev-selected lease may reuse the exact
 model/effort across clean continuations, avoiding a paid router call and cache
 thrash without masking changed state. Jev sees bounded cache affinity for the
@@ -59,7 +59,7 @@ All POSTs require the parent's protected Jev provider credential. Diagnostic
 logs are owner-only, bounded and contain no new prompt or generated-text excerpts.
 Display: streamed reasoning summaries get the routed tag appended in place
 ( · 🧠sol:low · ) so the Codex thread shows the picked model per call.
-The same rewriter keeps one response id across a relayed stream: a tandem stream
+The same rewriter keeps one response id across a relayed stream: a fallback stream
 has already crossed the local edge once, so its terminal event carries a
 re-encrypted id, and the Responses consumer in front of us refuses a completion
 whose id differs from the one `response.created` announced.
@@ -69,14 +69,15 @@ Balance: sufficient capability and effort for the next decision, including
 compaction. Capability profiles are priors; outcome quality requires evaluation.
 Log: ~/.codex/codex-router/jev-router-live.jsonl
 
-Codex-dry tandem: when native usage is exhausted — a manual flag file
+Codex-dry fallback: when native usage is exhausted — a manual flag file
 (~/.codex/codex-router/jev-router.codex-dry) or an observed quota failure
 (429 / usage-limit body) — the native model ladder is replaced until the window resets:
-all tiers default to deepseek/deepseek-v4.1-flash; environment settings can
-select distinct standard/frontier targets. A quota failure
-flips the state and retries the same call on the tandem; a successful native
-call clears an auto state (never the manual flag). A tandem call that comes
-back retryable (429/5xx) is tried once on a distinct configured sibling only,
+the embedded router discovers up to two compatible configured routes locally.
+Jev never receives that inventory. Environment settings can still select
+distinct standard/frontier targets explicitly. A quota failure flips the state
+and retries the same canonical call; a successful native
+call clears an auto state (never the manual flag). A fallback call that comes
+back retryable (429/5xx) is tried once on a distinct configured candidate only,
 before sending any error to the client. The decided depth travels with the call, mapped onto the Go
 ladder (low/high/max): a low step stays low, medium and high become high, and
 xhigh or above become max.
@@ -87,6 +88,8 @@ import http.client
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -131,11 +134,25 @@ ASK_TYPES = ("noul", "choice", "score")
 RESPONSE_MAX_BYTES = 64 * 1024 * 1024
 READ_TIMEOUT = 15
 
-# Codex-dry tandem: used ONLY while native (ChatGPT) usage is exhausted.
+# Codex-dry fallback: used ONLY while native (ChatGPT) usage is exhausted.
+# These environment variables remain an operator override. Without either one,
+# candidates are discovered from the embedded parent router only after native
+# quota exhaustion; healthy OpenAI turns pay no provider-discovery cost.
+FALLBACK_OVERRIDE = bool(
+    os.environ.get("JEV_FALLBACK_STANDARD") or os.environ.get("JEV_FALLBACK_FRONTIER")
+)
 GO_STANDARD = os.environ.get("JEV_FALLBACK_STANDARD", "deepseek/deepseek-v4.1-flash")
 GO_FRONTIER = os.environ.get("JEV_FALLBACK_FRONTIER", GO_STANDARD)
 GO_TANDEM = tuple(dict.fromkeys((GO_STANDARD, GO_FRONTIER)))
-# The tandem's own thinking ladder. Both Go models declare low/high/max where the
+ROUTER_CONTROL = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "router", "src", "control.mjs",
+)
+FALLBACK_DISCOVERY_TIMEOUT = 6.0
+FALLBACK_CACHE_TTL = 30.0
+_fallback_cache = {}
+_fallback_cache_lock = threading.Lock()
+# The conservative fallback thinking ladder. Existing Go routes declare low/high/max where the
 # native native model ladder exposes low/medium/high/xhigh/max, so a depth keeps its meaning
 # by landing on the middle rung instead of collapsing onto the floor: Jev says
 # "medium" about work it wants done carefully, and DeepSeek documents its `low`
@@ -146,10 +163,9 @@ TANDEM_EFFORT = {
     "medium": "high", "high": "high",
     "xhigh": "max", "max": "max", "ultra": "max",
 }
-# A status the *other* half of the tandem might still answer. opencode Go meters
-# the two Go models against separate allowances, and its gateway reports a spent
-# allowance with the same 429/503 shape as a transient one, so one more attempt
-# on the sibling model is worth it before the turn is lost. Nothing has reached
+# A status another configured candidate might still answer. Gateways can report
+# a spent allowance with the same 429/503 shape as a transient one, so one more
+# bounded attempt is worth it before the turn is lost. Nothing has reached
 # the client at this point: the forwarder only returns a retryable status before
 # it writes anything.
 RETRYABLE_TANDEM_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -158,16 +174,16 @@ DRY_STATE_PATH = os.path.join(STATE, "jev-router.codex-dry.json")
 DRY_COOLDOWN_S = 30 * 60
 # The edge announces when the exhausted window reopens, so an automatic flip
 # lasts until that instant (plus a small skew, so the re-probe cannot race the
-# reset itself) instead of a flat cooldown that keeps the tandem serving a
+# reset itself) instead of a flat cooldown that keeps the fallback serving a
 # window which already came back. The horizon is the backstop: a bogus or
-# hostile announcement still cannot pin the router to the tandem for a week.
+# hostile announcement still cannot pin the router to fallback for a week.
 DRY_RESET_SKEW_S = 5
 DRY_MAX_HORIZON_S = 7 * 24 * 3600
 QUOTA_RX = re.compile(
     r"(?i)(rate[ _-]?limit|out_of_usage|usage limit|hit your usage|insufficient_quota|quota)")
 
 # The events that close a Responses stream and repeat the response id it opened
-# with. A relayed (tandem) stream is rewritten onto that opening id.
+# with. A relayed fallback stream is rewritten onto that opening id.
 TERMINAL_EVENT_TYPES = ("response.completed", "response.incomplete", "response.failed")
 
 ERROR_RX = re.compile(
@@ -311,7 +327,7 @@ def native_dry():
     """Reason native usage is considered exhausted, or None while it is fine.
 
     The manual flag wins; the auto state carries an expiry so a stale flip
-    can never pin the router to the tandem forever.
+    can never pin the router to fallback forever.
     """
     if os.path.exists(DRY_MANUAL_PATH):
         return "manual"
@@ -322,7 +338,7 @@ def native_dry():
 
 
 def mark_native_dry(reason, resets_at=None):
-    """Flip to the Go tandem, for as long as the exhausted window stays shut.
+    """Flip to external fallback, for as long as the exhausted window stays shut.
 
     `resets_at` is the instant the edge said the window reopens. Ending the
     state just after it is what sends the next call back to the native native model ladder
@@ -372,6 +388,110 @@ def dry_target(native_model, effort):
     """Codex-dry tandem: frontier-tier steps -> GLM, everything else -> deepseek."""
     target = GO_FRONTIER if native_model == ASTRA else GO_STANDARD
     return target, tandem_effort(effort, native_model)
+
+
+def _node_binary():
+    configured = os.environ.get("JEV_NODE")
+    candidates = (
+        configured,
+        shutil.which("node"),
+        os.path.join(HOME, ".local", "bin", "node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
+    )
+    return next((candidate for candidate in candidates
+                 if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK)), None)
+
+
+def _fallback_constraints(payload):
+    """Small local capability hints; none of this state is sent to Jev."""
+    try:
+        encoded = json.dumps(payload, separators=(",", ":"))
+    except (TypeError, ValueError):
+        encoded = ""
+    text = encoded.lower()
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    tool_text = json.dumps(tools, separators=(",", ":")).lower() if tools else ""
+    has_search_history = '"web_search_call"' in text
+    needs_search = (
+        "web_search" in tool_text or "search_query" in tool_text or has_search_history
+    )
+    return {
+        # Same conservative direction as the parent router: reject a fallback
+        # that obviously cannot hold the canonical replay.
+        "estimated_tokens": max(1, (len(encoded.encode("utf-8")) + 2) // 3),
+        "image": '"input_image"' in text or '"image_url"' in text,
+        "multi_agent_v2": any(name in tool_text for name in (
+            "spawn_agent", "collaboration.spawn_agent", "create_subagent",
+        )),
+        "search_mode": "hosted" if needs_search else None,
+        "search_history": has_search_history,
+    }
+
+
+def fallback_candidates(native_model, payload):
+    """Ordered exact routes after native exhaustion, never including jev/auto."""
+    if FALLBACK_OVERRIDE:
+        primary = GO_FRONTIER if native_model == ASTRA else GO_STANDARD
+        return [
+            model for model in (primary, *(item for item in GO_TANDEM if item != primary))
+            if model != "jev/auto" and model not in TIERS
+        ]
+
+    constraints = _fallback_constraints(payload)
+    estimated_bucket = (
+        (constraints["estimated_tokens"] + 8191) // 8192
+    ) * 8192
+    cache_key = (
+        estimated_bucket,
+        constraints["image"],
+        constraints["multi_agent_v2"],
+        constraints["search_mode"],
+        constraints["search_history"],
+    )
+    now = time.monotonic()
+    with _fallback_cache_lock:
+        cached = _fallback_cache.get(cache_key)
+        if cached and now - cached[0] < FALLBACK_CACHE_TTL:
+            return list(cached[1])
+
+    node = _node_binary()
+    if not node:
+        return []
+    command = [
+        node, ROUTER_CONTROL, "failover", "candidates",
+        "--estimated-tokens", str(estimated_bucket),
+        "--limit", "2",
+    ]
+    if constraints["image"]:
+        command.append("--image")
+    if constraints["multi_agent_v2"]:
+        command.append("--multi-agent-v2")
+    if constraints["search_mode"]:
+        command.extend(("--search-mode", constraints["search_mode"]))
+    if constraints["search_history"]:
+        command.append("--search-history")
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=FALLBACK_DISCOVERY_TIMEOUT,
+            check=False,
+        )
+        parsed = json.loads(result.stdout) if result.returncode == 0 else {}
+        candidates = [
+            entry["slug"] for entry in parsed.get("candidates") or []
+            if isinstance(entry, dict)
+            and isinstance(entry.get("slug"), str)
+            and entry["slug"] != "jev/auto"
+        ][:2]
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        candidates = []
+    with _fallback_cache_lock:
+        _fallback_cache[cache_key] = (now, tuple(candidates))
+    return candidates
 
 
 def call_jev(key, state, questions=None, timeout=4.0):
@@ -1623,15 +1743,23 @@ class Handler(BaseHTTPRequestHandler):
             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
             model, effort, speed, gate = ASTRA, None, "default", "shadow(astra)"
 
-        # Codex-dry tandem: ONLY while native usage is exhausted (manual flag or
-        # observed quota failure) the native model ladder is replaced — GLM for frontier
-        # steps, deepseek for the rest. Otherwise luna/terra/sol/astra run untouched.
+        # ONLY while native usage is exhausted (manual flag or observed quota
+        # failure), replace the OpenAI ladder with locally discovered configured
+        # routes. Healthy native turns never enumerate providers.
         dry_reason = native_dry()
         native_model = model
+        fallback_plan = []
+        no_fallback = False
         if dry_reason and model in TIERS:
-            model, effort = dry_target(native_model, effort)
-            speed = "default"
-            gate = f"codex_dry({dry_reason}):{native_model}"
+            fallback_plan = fallback_candidates(native_model, payload)
+            if fallback_plan:
+                model = fallback_plan.pop(0)
+                effort = tandem_effort(effort, native_model)
+                speed = "default"
+                gate = f"codex_dry({dry_reason}):{native_model}"
+            else:
+                no_fallback = True
+                gate = f"codex_dry(no_candidate):{native_model}"
 
         # Display the model actually serving the request, including shadow and
         # operational fallbacks, rather than a hypothetical classification.
@@ -1651,51 +1779,62 @@ class Handler(BaseHTTPRequestHandler):
                 payload, model, effort, original_reasoning, injected_update
             )
 
-        apply_route(model, effort)
+        if not no_fallback:
+            apply_route(model, effort)
 
         out_path = "/v1/responses"
         self._attempts = []
-        status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
-            payload, out_path, stream_requested, debug, marker, model, signature, effort)
+        if no_fallback:
+            status, out_kind, ctype, quota_hit, resets_at = (
+                503, "json", "application/json", False, None
+            )
+            unwritten = json.dumps({
+                "error": {
+                    "message": "native Codex usage is exhausted and no compatible configured fallback is available"
+                }
+            }).encode("utf-8")
+        else:
+            status, out_kind, ctype, quota_hit, unwritten, resets_at = self._forward(
+                payload, out_path, stream_requested, debug, marker, model, signature, effort,
+                exact_route=bool(dry_reason and model not in TIERS))
         retried = False
         fallback = None
         if quota_hit and not dry_reason:
-            # Native usage is exhausted: flip to the Go tandem and retry this very
-            # call so the turn does not fail (nothing reached the client yet). The
-            # flip lasts until the edge says the window reopens, so the first call
-            # after the reset is served by the native native model ladder again.
+            # Native usage is exhausted: discover fallback routes now, then
+            # retry this exact canonical call before anything reaches the client.
             mark_native_dry("quota", resets_at=resets_at)
-            model, effort = dry_target(native_model, effort)
-            apply_route(model, effort)
-            retried = True
-            # The log records the state this call entered, not the one it started
-            # in: reading `dry: None` next to `codex_dry(retry)` is how a flip
-            # looks like it never happened when calibrating from the log.
             dry_reason = "quota"
-            gate = f"codex_dry(retry):{native_model}"
-            marker = route_marker(model, effort)
-            signature = presentation_signature(payload, {"model": model, "effort": effort})
-            status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature, effort)
+            fallback_plan = fallback_candidates(native_model, payload)
+            if fallback_plan:
+                model = fallback_plan.pop(0)
+                effort = tandem_effort(effort, native_model)
+                apply_route(model, effort)
+                retried = True
+                gate = f"codex_dry(retry):{native_model}"
+                marker = route_marker(model, effort)
+                signature = presentation_signature(payload, {"model": model, "effort": effort})
+                status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
+                    payload, out_path, stream_requested, debug, marker, model, signature, effort,
+                    exact_route=True)
+            else:
+                gate = f"codex_dry(no_candidate):{native_model}"
         elif status == 200 and not dry_reason and model in TIERS and os.path.exists(DRY_STATE_PATH):
             # Native answered again: drop the stale auto state (never the flag).
             clear_native_dry()
             dry_reason = "cleared"
-        if (model in GO_TANDEM and status in RETRYABLE_TANDEM_STATUS
-                and unwritten is not None and other_tandem(model)):
-            # Half of the tandem refused this call, so try the sibling model
-            # before the turn is lost. The two Go models are metered against
-            # separate allowances, and a spent allowance arrives as the same
-            # 429/503 a transient outage does -- which is exactly what killed a
-            # live session on 18 September 2026 after the handoff.
-            fallback = other_tandem(model)
+        if (model not in TIERS and status in RETRYABLE_TANDEM_STATUS
+                and unwritten is not None and fallback_plan):
+            # One bounded sibling attempt. The candidate resolver already
+            # removed jev/auto and incompatible/offline local routes.
+            fallback = fallback_plan.pop(0)
             model, effort = fallback, tandem_effort(effort, native_model)
             apply_route(model, effort)
             gate = f"codex_dry(fallback):{native_model}"
             marker = route_marker(model, effort)
             signature = presentation_signature(payload, {"model": model, "effort": effort})
             status, out_kind, ctype, quota_hit, unwritten, _resets_at = self._forward(
-                payload, out_path, stream_requested, debug, marker, model, signature, effort)
+                payload, out_path, stream_requested, debug, marker, model, signature, effort,
+                exact_route=True)
         if unwritten is not None:
             # Every model that could have served this turn refused it, and the
             # refusal was held back only because another attempt might have
@@ -1752,6 +1891,8 @@ class Handler(BaseHTTPRequestHandler):
                                  and bool(payload["prompt_cache_key"].strip()),
             "retried": retried,
             "fallback": fallback,
+            "fallback_candidates": [attempt["model"] for attempt in self._attempts
+                                    if attempt["model"] not in TIERS],
             "jev_ms": jev_ms,
             "total_ms": int((time.time() - t0) * 1000),
             "status": status,
@@ -1770,7 +1911,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _forward(
         self, payload, out_path, stream_requested, debug, marker, model,
-        signature=None, effective_effort=None,
+        signature=None, effective_effort=None, exact_route=False,
     ):
         """One relay attempt to the local caller edge, streamed straight back.
 
@@ -1794,11 +1935,17 @@ class Handler(BaseHTTPRequestHandler):
         self._attempts.append(attempt)
         markerer = None
         try:
+            headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+            if exact_route:
+                # This request is already one hop of Jev's bounded recovery
+                # plan. Disable the parent router's own cross-model failover so
+                # it cannot recurse through jev/auto or duplicate candidates.
+                headers["x-codex-router-exact-route"] = "1"
             conn.request(
                 "POST",
                 f"/_codex-router/{caller_secret()}{out_path}",
                 body=body,
-                headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+                headers=headers,
             )
             resp = conn.getresponse()
             status = resp.status

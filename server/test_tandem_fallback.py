@@ -54,6 +54,7 @@ class Edge(BaseHTTPRequestHandler):
 
     attempts = []
     payloads = []
+    headers = []
     refuse = ()
     body = COMPLETED
     reset_at = 0
@@ -66,6 +67,7 @@ class Edge(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         type(self).payloads.append(body)
+        type(self).headers.append(dict(self.headers))
         model = body.get("model")
         type(self).attempts.append((model, (body.get("reasoning") or {}).get("effort")))
         if model in type(self).refuse:
@@ -93,6 +95,7 @@ class TandemHandoff(unittest.TestCase):
         self.enterContext(mock.patch.object(jev, "local_secret", return_value="fixture-local"))
         Edge.attempts = []
         Edge.payloads = []
+        Edge.headers = []
         Edge.refuse = ()
         Edge.body = COMPLETED
         Edge.reset_at = 0
@@ -108,6 +111,7 @@ class TandemHandoff(unittest.TestCase):
         self.enterContext(mock.patch.object(jev, "GO_FRONTIER", "fixture/frontier"))
         self.enterContext(mock.patch.object(jev, "GO_TANDEM",
                                           ("fixture/standard", "fixture/frontier")))
+        self.enterContext(mock.patch.object(jev, "FALLBACK_OVERRIDE", True))
         self.logged = threading.Event()
         original_log = jev.log_line
 
@@ -481,6 +485,12 @@ class TandemHandoff(unittest.TestCase):
                 status, body = self.call(reasoning={"effort": "max"})
                 self.assertEqual(status, 200, body)
                 self.assertEqual([model for model, _ in Edge.attempts], [jev.ASTRA, jev.GO_FRONTIER])
+                self.assertNotIn("x-codex-router-exact-route", {
+                    key.lower(): value for key, value in Edge.headers[0].items()
+                })
+                self.assertEqual({
+                    key.lower(): value for key, value in Edge.headers[1].items()
+                }.get("x-codex-router-exact-route"), "1")
                 self.assertEqual(
                     Edge.payloads[0]["input"][0].get("type"), "configuration_update"
                 )

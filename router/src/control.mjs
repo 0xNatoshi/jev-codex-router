@@ -2014,6 +2014,42 @@ async function handleFailover(action, ...rest) {
     process.stdout.write(`${JSON.stringify(snapshot(), null, 2)}\n`);
     return;
   }
+  if (desired === "candidates") {
+    const { liveJevFallbackCandidates } = await import("./jev-fallback.mjs");
+    const option = (name) => {
+      const index = rest.indexOf(name);
+      return index >= 0 ? rest[index + 1] : undefined;
+    };
+    const estimated = Number(option("--estimated-tokens"));
+    const limit = Number(option("--limit") || 2);
+    const requiredSearchMode = option("--search-mode");
+    const candidates = await liveJevFallbackCandidates({
+      ...(Number.isFinite(estimated) && estimated > 0 ? { estimatedTokens: estimated } : {}),
+      needsImage: rest.includes("--image"),
+      needsMultiAgentV2: rest.includes("--multi-agent-v2"),
+      ...(requiredSearchMode ? { requiredSearchMode } : {}),
+      hasSearchHistory: rest.includes("--search-history"),
+      limit,
+    });
+    process.stdout.write(`${JSON.stringify({ candidates })}\n`);
+    return;
+  }
+  if (desired === "qualify") {
+    const slug = String(rest[0] || "").trim();
+    if (!slug) throw new Error("Usage: control failover qualify <local-model-slug>");
+    const { PROVIDERS } = await import("./model-registry.mjs");
+    const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+    const model = selectedConfiguredListedModels().find((entry) => entry.slug === slug);
+    if (!model || !PROVIDERS.get(model.provider)?.keyless) {
+      throw new Error(`${slug} is not a configured local model.`);
+    }
+    const { checkAgentCapability, publishedSlugs } = await import("./agent-check.mjs");
+    const { saveAgentCheck } = await import("./local-models.mjs");
+    const result = checkAgentCapability(slug, { catalogSlugs: await publishedSlugs() });
+    saveAgentCheck(slug, result);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
   if (desired === "on" || desired === "off") {
     setFailoverEnabled(desired === "on");
   } else if (desired === "chain") {
@@ -2026,7 +2062,7 @@ async function handleFailover(action, ...rest) {
     clearAllProviderCooldowns();
   } else {
     throw new Error(
-      "Usage: control failover status|on|off|chain <model-slug,...>|auto|reset",
+      "Usage: control failover status|on|off|chain <model-slug,...>|auto|reset|candidates [constraints]|qualify <local-model-slug>",
     );
   }
   process.stdout.write(`${JSON.stringify(snapshot(), null, 2)}\n`);
